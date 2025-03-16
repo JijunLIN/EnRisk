@@ -17,6 +17,14 @@ See official repository at
 </a>
 </p>
 
+## Things Changed
+- src/models/ensemble: add several models and trainers using ensemble.
+- add ensemble config
+- add a script training the model
+- modify planner to adapt the ensemble
+- modify renderer that shows the risk in video
+- and other small changes
+
 ## Setup Environment
 
 Test with Ubuntu 20.04.5 LTS.
@@ -44,39 +52,39 @@ sh ./script/setup_env.sh
 
 ## Feature Cache
 
-Set Environment variable.
+Set Environment variables. Set "/your/data/path".
 
 ```
-export NUPLAN_DATA_ROOT="/media/jjlin/database/nuplan/dataset"
-export NUPLAN_MAPS_ROOT="/media/jjlin/database/nuplan/dataset/maps"
-export NUPLAN_EXP_ROOT="/media/jjlin/database/nuplan/exp"
+export NUPLAN_DATA_ROOT="/your/data/path/nuplan/dataset"
+export NUPLAN_MAPS_ROOT="/your/data/path/nuplan/dataset/maps"
+export NUPLAN_EXP_ROOT="/your/data/path/nuplan/exp"
 ```
 
-Preprocess the dataset to accelerate training. It is recommended to run a small sanity check to make sure everything is correctly setup.
+Preprocess the dataset to accelerate training. It is recommended to run a small sanity check to make sure everything is correctly setup. You may need to change `cache.cache_path` to suit your condition.
 
 ```
  python run_training.py \
     py_func=cache +training=train_pluto \
     scenario_builder=nuplan_mini \
-    cache.cache_path=/media/jjlin/database/nuplan/exp/sanity_check \
+    cache.cache_path=/your/data/path/nuplan/exp/sanity_check \
     cache.cleanup_cache=true \
     scenario_filter=training_scenarios_tiny \
     worker=sequential
 ```
 
-Preprocess the mini set.
+Preprocess the mini set. You should modify the "training_scenarios_mini.yaml" to scale the trainset.
 
 ```
  python run_training.py \
     py_func=cache +training=train_pluto \
     scenario_builder=nuplan_mini \
-    cache.cache_path=/media/jjlin/database/nuplan/exp/tinytinymini \
+    cache.cache_path=/your/data/path/nuplan/exp/mini \
     cache.cleanup_cache=true \
     scenario_filter=training_scenarios_mini \
     worker.threads_per_node=5
 ```
 
-Then preprocess the whole nuPlan training set (this will take some time). You may need to change `cache.cache_path` to suit your condition
+Then preprocess the whole nuPlan training set (this will take some time).
 
 ```
  export PYTHONPATH=$PYTHONPATH:$(pwd)
@@ -84,14 +92,19 @@ Then preprocess the whole nuPlan training set (this will take some time). You ma
  python run_training.py \
     py_func=cache +training=train_pluto \
     scenario_builder=nuplan \
-    cache.cache_path=/nuplan/exp/cache_pluto_1M \
+    cache.cache_path=/your/data/path/nuplan/exp/cache_pluto_1M \
     cache.cleanup_cache=true \
     scenario_filter=training_scenarios_1M \
     worker.threads_per_node=40
 ```
 
 ## Training
-
+### BEFORE YOUR TRAINING
+You should
+- adjust *every* yaml in config.
+- modify train_pluto_model.sh and run_pluto_planner.sh (environment variable, batch_size, CHALLENGE and so on)
+- adjust DEVICE, BATCH SIZE, WORKER NUMBER according to your device
+### Normal training
 (The training part it not fully tested)
 
 Same, it is recommended to run a sanity check first:
@@ -126,15 +139,15 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python run_training.py \
 
 - you can remove wandb related configurations if your prefer tensorboard.
 
-## Ensemble
-
+### Ensemble training
+Total ensemble PLUTO.
 ```
 sh ./script/train_pluto_model.sh train train_total_ensemble_pluto 20 /media/jjlin/database/nuplan/exp/tinytinymini
 
 sh ./script/run_pluto_planner.sh total_ensemble_planner nuplan_mini mini_demo_scenario test1.ckpt /home/jjlin/pluto_dev/result
 
 ```
-
+Prediction ensemble PLUTO.
 ```
 sh ./script/train_pluto_model.sh train train_prediction_ensemble_pluto 20 /media/jjlin/database/nuplan/exp/tinymini
 ```
