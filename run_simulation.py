@@ -22,6 +22,11 @@ from nuplan.planning.script.utils import (
 from nuplan.planning.simulation.planner.abstract_planner import AbstractPlanner
 from omegaconf import DictConfig, OmegaConf
 
+import warnings
+
+# 忽略特定警告
+warnings.filterwarnings("ignore", message="Converting mask without torch.bool dtype to bool")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

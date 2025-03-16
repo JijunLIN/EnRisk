@@ -183,7 +183,6 @@ def build_custom_trainer(cfg: DictConfig) -> pl.Trainer:
     :return: built object.
     """
     params = cfg.lightning.trainer.params
-
     # callbacks = build_callbacks(cfg)
     callbacks = [
         ModelCheckpoint(

@@ -99,6 +99,7 @@ class NuplanScenarioRender:
         agent_attn_weights=None,
         candidate_index=None,
         return_img=True,
+        risk=None,
     ):
         ego_state = current_input.history.ego_states[-1]
         map_api = initialization.map_api
@@ -135,6 +136,7 @@ class NuplanScenarioRender:
             predictions=predictions,
             agent_attn_weights=agent_attn_weights,
             return_img=return_img,
+            risk=risk,
         )
 
     def render_from_scenario(
@@ -194,6 +196,7 @@ class NuplanScenarioRender:
         predictions=None,
         agent_attn_weights=None,
         return_img=False,
+        risk=None,
     ):
         fig, ax = plt.subplots(figsize=(10, 10))
 
@@ -257,6 +260,9 @@ class NuplanScenarioRender:
         if predictions is not None:
             self._plot_prediction(ax, predictions)
 
+        if risk is not None:
+            self._plot_risk(ax, risk)
+
         self._plot_mission_goal(ax, mission_goal)
         self._plot_history(ax)
 
@@ -276,6 +282,14 @@ class NuplanScenarioRender:
             return img
         else:
             plt.show()
+    
+    def _plot_risk(self, ax, risk):
+        string = ""
+        if risk is None:
+            string = "No Data"
+        else:
+            string = "Risk: " + str(risk)
+        ax.text(20,20,string,fontsize=14,color='red')
 
     def _plot_map(
         self,

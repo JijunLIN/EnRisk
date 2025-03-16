@@ -1,6 +1,7 @@
-# PLUTO
+# Ensemble PLUTO
+This is a PLUTO autonomous driving using total and local ensemble network.
 
-This is the official repository of
+See official repository at
 
 **PLUTO: Push the Limit of Imitation Learning-based Planning for Autonomous Driving**,
 
@@ -17,6 +18,8 @@ This is the official repository of
 </p>
 
 ## Setup Environment
+
+Test with Ubuntu 20.04.5 LTS.
 
 ### Setup dataset
 
@@ -41,16 +44,36 @@ sh ./script/setup_env.sh
 
 ## Feature Cache
 
+Set Environment variable.
+
+```
+export NUPLAN_DATA_ROOT="/media/jjlin/database/nuplan/dataset"
+export NUPLAN_MAPS_ROOT="/media/jjlin/database/nuplan/dataset/maps"
+export NUPLAN_EXP_ROOT="/media/jjlin/database/nuplan/exp"
+```
+
 Preprocess the dataset to accelerate training. It is recommended to run a small sanity check to make sure everything is correctly setup.
 
 ```
  python run_training.py \
     py_func=cache +training=train_pluto \
     scenario_builder=nuplan_mini \
-    cache.cache_path=/nuplan/exp/sanity_check \
+    cache.cache_path=/media/jjlin/database/nuplan/exp/sanity_check \
     cache.cleanup_cache=true \
     scenario_filter=training_scenarios_tiny \
     worker=sequential
+```
+
+Preprocess the mini set.
+
+```
+ python run_training.py \
+    py_func=cache +training=train_pluto \
+    scenario_builder=nuplan_mini \
+    cache.cache_path=/media/jjlin/database/nuplan/exp/tinytinymini \
+    cache.cleanup_cache=true \
+    scenario_filter=training_scenarios_mini \
+    worker.threads_per_node=5
 ```
 
 Then preprocess the whole nuPlan training set (this will take some time). You may need to change `cache.cache_path` to suit your condition
@@ -81,6 +104,12 @@ CUDA_VISIBLE_DEVICES=0 python run_training.py \
   data_loader.params.batch_size=4 data_loader.params.num_workers=1
 ```
 
+Training on the mini dataset:
+
+```
+sh ./script/train_pluto_model.sh train train_pluto 32 /media/jjlin/database/nuplan/exp/tinymini
+```
+
 Training on the full dataset (without CIL):
 
 ```
@@ -97,6 +126,22 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 python run_training.py \
 
 - you can remove wandb related configurations if your prefer tensorboard.
 
+## Ensemble
+
+```
+sh ./script/train_pluto_model.sh train train_total_ensemble_pluto 20 /media/jjlin/database/nuplan/exp/tinytinymini
+
+sh ./script/run_pluto_planner.sh total_ensemble_planner nuplan_mini mini_demo_scenario test1.ckpt /home/jjlin/pluto_dev/result
+
+```
+
+```
+sh ./script/train_pluto_model.sh train train_prediction_ensemble_pluto 20 /media/jjlin/database/nuplan/exp/tinymini
+```
+
+
+
+
 
 ## Checkpoint
 
@@ -112,31 +157,17 @@ Download and place the checkpoint in the `pluto/checkpoints` folder.
 Run simulation for a random scenario in the nuPlan-mini split
 
 ```
-sh ./script/run_pluto_planner.sh pluto_planner nuplan_mini mini_demo_scenario pluto_1M_aux_cil.ckpt /dir_to_save_the_simulation_result_video
+sh ./script/run_pluto_planner.sh pluto_planner nuplan_mini mini_demo_scenario test.ckpt /home/jjlin/pluto_dev/result
 ```
 
 The rendered simulation video will be saved to the specified directory (need change `/dir_to_save_the_simulation_result_video`).
 
 ## To Do
 
-The code is under cleaning and will be released gradually.
-
 - [ ] improve docs
-- [x] training code
-- [x] visualization
-- [x] pluto-planner & checkpoint
-- [x] feature builder & model
-- [x] initial repo & paper
+- [ ] total ensemble
+- [ ] local ensemble
+- [ ] visualization
+- [ ] utils
 
 ## Citation
-
-If you find this repo useful, please consider giving us a star 🌟 and citing our related paper.
-
-```bibtex
-@article{cheng2024pluto,
-  title={PLUTO: Pushing the Limit of Imitation Learning-based Planning for Autonomous Driving},
-  author={Cheng, Jie and Chen, Yingbing and Chen, Qifeng},
-  journal={arXiv preprint arXiv:2404.14327},
-  year={2024}
-}
-```

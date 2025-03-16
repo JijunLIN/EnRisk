@@ -1,6 +1,10 @@
 cwd=$(pwd)
 CKPT_ROOT="$cwd/checkpoints"
 
+export NUPLAN_DATA_ROOT="/media/jjlin/database/nuplan/dataset"
+export NUPLAN_MAPS_ROOT="/media/jjlin/database/nuplan/dataset/maps"
+export NUPLAN_EXP_ROOT="/media/jjlin/database/nuplan/exp"
+
 PLANNER=$1
 BUILDER=$2
 FILTER=$3

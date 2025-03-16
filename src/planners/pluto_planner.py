@@ -97,7 +97,7 @@ class PlutoPlanner(AbstractPlanner):
         if render:
             self._scene_render = NuplanScenarioRender()
             if save_dir is not None:
-                self.video_dir = Path(save_dir)
+                self.video_dir = Path(save_dir+"/video")
             else:
                 self.video_dir = Path(os.getcwd())
             self.video_dir.mkdir(exist_ok=True, parents=True)
@@ -120,6 +120,9 @@ class PlutoPlanner(AbstractPlanner):
         """Inherited, see superclass."""
         torch.set_grad_enabled(False)
 
+        #print("Model state_dict keys:", self._planner.state_dict().keys())
+        #print("Checkpoint state_dict keys:", load_checkpoint(self._planner_ckpt).keys())
+        
         if self._planner_ckpt is not None:
             self._planner.load_state_dict(load_checkpoint(self._planner_ckpt))
 
@@ -243,6 +246,35 @@ class PlutoPlanner(AbstractPlanner):
                     include_ego_state=False,
                 )
             )
+        #print(out["trajectories"][0])
+        #print(trajectories[0])
+        risk = 0
+        if "trajectories" in out:
+            trajectories = [traj.cpu().numpy() for traj in out["trajectories"]]
+        #id = str(self._planner_ckpt).split("/")[-1]
+            with open(f"/home/jjlin/pluto_dev/result/log/{self._scenario.log_name}_{self._scenario.token}.txt"
+                    ,'a') as file:
+                if trajectories is not None:
+                    #file.write("0,0,0*\n")
+                    for traj in trajectories:
+                        #print(np.shape(traj))
+                        for i in range(traj.shape[1]):
+                            file.write(str(traj[0][i][0])+"," +
+                                    str(traj[0][i][1])+"," +
+                                    str(traj[0][i][2])+
+                                    "*")
+                        file.write("|")
+                    file.write("\n")
+            for traj in trajectories:
+                result_x = []
+                result_y = []
+                result_heading = []
+                for i in range(traj.shape[1]):
+                    result_x.append(traj[0][i][0])
+                    result_y.append(traj[0][i][1])
+                    result_heading.append(traj[0][i][2])
+                risk += (np.var(result_x) + np.var(result_y) + np.var(result_heading))
+            risk = risk/self._planner.num_ensemble
 
         if self._render:
             self._imgs.append(
@@ -259,8 +291,10 @@ class PlutoPlanner(AbstractPlanner):
                     candidate_index=best_candidate_idx,
                     predictions=predictions,
                     return_img=True,
+                    risk=risk
                 )
             )
+
 
         return trajectory
 
@@ -435,10 +469,10 @@ class PlutoPlanner(AbstractPlanner):
 
         if self._render:
             import imageio
-
+            id = str(self._planner_ckpt.split("/")[-1])
             imageio.mimsave(
                 self.video_dir
-                / f"{self._scenario.log_name}_{self._scenario.token}.mp4",
+                / f"{self._scenario.log_name}_{self._scenario.token}_{id}.mp4",
                 self._imgs,
                 fps=10,
             )
