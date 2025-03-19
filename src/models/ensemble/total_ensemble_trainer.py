@@ -142,7 +142,6 @@ class TotalEnsembleTrainer(pl.LightningModule):
         opt.step()
     
     def on_train_batch_end(self, outputs, batch, batch_idx):  # JJ？
-    # 手动释放计算图
         torch.cuda.empty_cache()
 
     def _compute_objectives(self, res, data) -> Dict[str, torch.Tensor]:
@@ -434,10 +433,7 @@ class TotalEnsembleTrainer(pl.LightningModule):
         :param features: features batch
         :return: model's predictions
         """
-        out = self.model.parallel(features)
-        predictions = [mdl(out["x"], out["A"]) for mdl in self.model.parallel]
-        print(predictions)
-        exit(0)
+        return self.model(features)            
         out = {
             "predictions": predictions,  # (bs, A-1, T, 2)
             #"prediction" : 

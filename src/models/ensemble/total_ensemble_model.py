@@ -65,7 +65,7 @@ class TotalEnsembleModel(TorchModuleWrapper):
         for model in self.parallel:
             res = model(data)
             reses.append(res)
-            probs.append(res["probability"])
+            #probs.append(res["probability"])
             #losses = self._compute_objectives(res, data)
             #losseses.append(losses["loss"])
         out = reses[0] #JJ

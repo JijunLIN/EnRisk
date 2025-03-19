@@ -435,27 +435,6 @@ class PredictionEnsembleTrainer(pl.LightningModule):
         :param features: features batch
         :return: model's predictions
         """
-        out = self.model.shared(features)
-        predictions = [mdl(out["x"], out["A"]) for mdl in self.model.parallel]
-        print(predictions)
-        exit(0)
-        out = {
-            "predictions": predictions,  # (bs, A-1, T, 2)
-            #"prediction" : 
-        }
-        if not self.training:
-            '''
-            output_prediction = torch.cat(
-                [
-                    prediction[..., :2] + agent_pos[:, 1:A, None],
-                    torch.atan2(prediction[..., 3], prediction[..., 2]).unsqueeze(-1)
-                    + agent_heading[:, 1:A, None, None],
-                    prediction[..., 4:6],
-                ],
-                dim=-1,
-            )
-            out["output_prediction"] = output_prediction'''
-        return out
         return self.model(features)
 
     def configure_optimizers(

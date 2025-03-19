@@ -14,4 +14,4 @@ CUDA_VISIBLE_DEVICES=0 python run_training.py \
   py_func=$FUNC +training=$TRAIN_JOB \
   worker=single_machine_thread_pool worker.max_workers=$WORKERS_NUM \
   scenario_builder=nuplan cache.cache_path=$CACHE_PATH cache.use_cache_without_dataset=true \
-  data_loader.params.batch_size=10 data_loader.params.num_workers=20
+  data_loader.params.batch_size=6 data_loader.params.num_workers=20

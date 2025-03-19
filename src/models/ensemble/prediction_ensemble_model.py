@@ -1,5 +1,6 @@
 from copy import deepcopy
 import math
+from nuplan.planning.training.modeling.types import FeaturesType, TargetsType
 
 import torch
 import torch.nn as nn
@@ -294,6 +295,7 @@ class PredictionEnsembleModel(TorchModuleWrapper):
             target_builders=[EgoTrajectoryTargetBuilder(trajectory_sampling)],
             future_trajectory_sampling=trajectory_sampling,
         )
+        self.history_steps = history_steps
         self.num_ensemble = num_ensemble
         self.shared = PlanningModelShared(dim, state_channel, polygon_channel,
                                                 history_channel, history_steps, future_steps,
@@ -303,3 +305,27 @@ class PredictionEnsembleModel(TorchModuleWrapper):
                                                 use_hidden_proj, cat_x, ref_free_traj,
                                                 feature_builder)  # 共享模型
         self.parallel = nn.ModuleList([PlanningModelParrallel(dim, future_steps) for _ in range(num_ensemble)])
+
+    def forward(self, data):
+        out = self.model.shared(data)
+        output_predictions = []
+        for model in self.parallel:
+            prediction = model(out["x"], out["A"])
+            if not self.training:
+                prediction = out["prediction"]
+                agent_pos = data["agent"]["position"][:, :, self.history_steps - 1]
+                agent_heading = data["agent"]["heading"][:, :, self.history_steps - 1]
+                bs, A = agent_pos.shape[0:2]
+                output_prediction = torch.cat(
+                [
+                    prediction[..., :2] + agent_pos[:, 1:A, None],
+                    torch.atan2(prediction[..., 3], prediction[..., 2]).unsqueeze(-1)
+                    + agent_heading[:, 1:A, None, None],
+                    prediction[..., 4:6],
+                ],
+                dim=-1,
+                )
+                output_predictions.append(output_prediction)  # (bs, A-1, T, 2)
+        out["output_prediction"] = output_prediction[0] # JJ
+        out["output_predictions"] = output_predictions
+        return out
