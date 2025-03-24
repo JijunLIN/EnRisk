@@ -286,13 +286,13 @@ class PlutoPlanner(AbstractPlanner):
             risk_dict["e_traj_var"] = self._cal_val(np.stack(trajectories))
 
         
-        risk = f"""Candidate traj var: {risk_dict['traj_var']}
-Candidate traj prob var: {risk_dict['prob_var']}
-Candidate traj rule-based score var: {np.var(risk_dict['rule_based_scores'], axis=0)}
+        risk = f"""Candidate traj var: {np.array2string(risk_dict['traj_var'], precision=6)}
+Candidate traj prob var: {np.array2string(risk_dict['prob_var'], precision=6)}
 Traj var: {risk_dict["e_traj_var"] if "e_traj_var" in risk_dict else "None"}
-Traj Chosed: {risk_dict['traj_chosed']} Final Score: {risk_dict['final_score']}
-Predictions var: {np.array2string(risk_dict['pred_var'], precision=2, suppress_small=False)}
+Traj Chosed: {risk_dict['traj_chosed']}     Final Score: {np.array2string(risk_dict['final_score'], precision=6)}
+Predictions var: {np.array2string(risk_dict['pred_var'], precision=3, suppress_small=True, max_line_width=np.inf)}
 """
+#Candidate traj rule-based score var: {np.array2string(np.var(risk_dict['rule_based_scores'], axis=0), precision=6, suppress_small=False)}
         self.log_data_to_mat(risk_dict)
         if self._render:
             self._imgs.append(

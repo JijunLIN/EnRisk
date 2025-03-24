@@ -293,10 +293,17 @@ class NuplanScenarioRender:
         if risk is None:
             string = "No Data"
         else:
-            string = "Risk: " + str(risk)
-        wrap_width = 50
-        wrapped_text = textwrap.fill(string, wrap_width)
-        ax.text(0.05,0.95,wrapped_text,fontsize=14,color='red', ha="left", va = "top", transform=ax.transAxes)
+            string = "Risk related parameters:\n" + risk
+        wrap_width = 80
+        #print(string)
+        lines = string.splitlines()
+
+        wrapped_lines = [textwrap.fill(line, width=wrap_width) for line in lines]
+
+        wrapped_string = "\n".join(wrapped_lines)
+
+        #print(wrapped_string)
+        ax.text(0.05,0.95,wrapped_string,fontsize=14,color='red', ha="left", va = "top", transform=ax.transAxes)
 
     def _plot_map(
         self,
