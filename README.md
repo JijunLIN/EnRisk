@@ -144,7 +144,7 @@ Total ensemble PLUTO.
 ```
 sh ./script/train_pluto_model.sh train train_total_ensemble_pluto 20 /media/jjlin/database/nuplan/exp/tinytinymini
 
-sh ./script/run_pluto_planner.sh total_ensemble_planner nuplan_mini mini_demo_scenario test1.ckpt /home/jjlin/pluto_dev/result
+sh ./script/run_pluto_planner.sh total_ensemble_planner nuplan_mini mini_demo_scenario te_t.ckpt /home/jjlin/pluto_dev/result
 
 ```
 Prediction ensemble PLUTO.
@@ -153,7 +153,10 @@ sh ./script/train_pluto_model.sh train train_prediction_ensemble_pluto 20 /media
 ```
 
 
-
+```
+ sh ./script/run_pluto_planner.sh prediction_ensemble_planner nuplan_mini mini_demo_scenario pe_t.ckpt /home/jjlin/pluto_dev/result
+ sh ./script/run_pluto_planner.sh prediction_ensemble_planner nuplan_mini mini_demo_scenario pe_tt.ckpt /home/jjlin/pluto_dev/result
+```
 
 
 ## Checkpoint
@@ -163,14 +166,17 @@ Download and place the checkpoint in the `pluto/checkpoints` folder.
 | Model            | Download |
 | ---------------- | -------- |
 | Pluto-1M-aux-cil | [OneDrive](https://hkustconnect-my.sharepoint.com/:u:/g/personal/jchengai_connect_ust_hk/EaFpLwwHFYVKsPVLH2nW5nEBNbPS7gqqu_Rv2V1dzODO-Q?e=LAZQcI)    |
-
+| Total-Ensemble-0.1mini|[Tsinghua]|
+| Prediction-Ensemble-0.1mini|[Tsinghua]|
 
 ## Run Pluto-planner simulation
 
 Run simulation for a random scenario in the nuPlan-mini split
 
 ```
-sh ./script/run_pluto_planner.sh pluto_planner nuplan_mini mini_demo_scenario test.ckpt /home/jjlin/pluto_dev/result
+sh ./script/run_pluto_planner.sh pluto_planner nuplan_mini mini_demo_scenario exp2.ckpt /home/jjlin/pluto_dev/result
+
+sh ./script/run_pluto_planner.sh pluto_planner nuplan_mini mini_demo_scenario pluto_1M_aux_cil.ckpt /home/jjlin/pluto_dev/result
 ```
 
 The rendered simulation video will be saved to the specified directory (need change `/dir_to_save_the_simulation_result_video`).

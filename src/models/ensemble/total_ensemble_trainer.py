@@ -109,8 +109,6 @@ class TotalEnsembleTrainer(pl.LightningModule):
         opt.zero_grad()
         
         data=features["feature"].data
-        losseses = []
-        metricses = []
 
         batch_size = data["agent"]["position"].size(0)
         #print(batch_size)
@@ -124,22 +122,30 @@ class TotalEnsembleTrainer(pl.LightningModule):
         for model in self.model.parallel:
             # bootstrap sampling
             indices = torch.randint(0, batch_size, (batch_size,))
-            print(f"bootstrap sampling, {indices} selected")
+            #with open("/home/jjlin/pluto_dev/result/log/2021.08.17.16.57.11_veh-08_01200_01636_9e30155b8bb55fd9_test.ckpt.txt", "a") as file
+            #    file.write(f"bootstrap sampling, {indices} selected")
             data_bootstrap = extract_by_indices(data, indices)
 
             res = model(data_bootstrap)
             
-            losses = self._compute_objectives(res, data)
-            metrics = self._compute_metrics(res, data, prefix)
+            losses = self._compute_objectives(res, data_bootstrap)
+            metrics = self._compute_metrics(res, data_bootstrap, prefix)
 
-            losseses.append(losses)
-            metricses.append(metrics)
             if self.training:
                 self.manual_backward(losses["loss"], retain_graph=True)
 
         self._log_step(losses["loss"], losses, metrics, prefix)
 
         opt.step()
+    """
+    def on_after_backward(self):
+        with open("/home/jjlin/pluto_dev/result/log/2021.08.17.16.57.11_veh-08_01200_01636_9e30155b8bb55fd9_test.ckpt.txt", "a") as file:
+            for name, param in self.named_parameters():
+                if param.grad is not None:
+                    file.write(f"{name} 的梯度被更新了\n")
+                else:
+                    #print(f"{name} 的梯度未被更新")
+                    pass"""
     
     def on_train_batch_end(self, outputs, batch, batch_idx):  # JJ？
         torch.cuda.empty_cache()

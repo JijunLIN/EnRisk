@@ -162,3 +162,4 @@ wandb/
 outputs/
 *.ckpt
 checkpoints/
+result/

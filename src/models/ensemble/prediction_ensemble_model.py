@@ -307,12 +307,12 @@ class PredictionEnsembleModel(TorchModuleWrapper):
         self.parallel = nn.ModuleList([PlanningModelParrallel(dim, future_steps) for _ in range(num_ensemble)])
 
     def forward(self, data):
-        out = self.model.shared(data)
+        out = self.shared(data)
         output_predictions = []
         for model in self.parallel:
             prediction = model(out["x"], out["A"])
+            out["prediction"] = prediction
             if not self.training:
-                prediction = out["prediction"]
                 agent_pos = data["agent"]["position"][:, :, self.history_steps - 1]
                 agent_heading = data["agent"]["heading"][:, :, self.history_steps - 1]
                 bs, A = agent_pos.shape[0:2]
@@ -326,6 +326,6 @@ class PredictionEnsembleModel(TorchModuleWrapper):
                 dim=-1,
                 )
                 output_predictions.append(output_prediction)  # (bs, A-1, T, 2)
-        out["output_prediction"] = output_prediction[0] # JJ
+        out["output_prediction"] = output_predictions[0] # JJ
         out["output_predictions"] = output_predictions
         return out

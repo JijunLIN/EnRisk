@@ -71,4 +71,5 @@ class TotalEnsembleModel(TorchModuleWrapper):
         out = reses[0] #JJ
         assert "trajectories" not in out and "output_trajectory" in out
         out["trajectories"] = [o["output_trajectory"] for o in reses]
+        out["output_predictions"] = [o["output_prediction"] for o in reses]
         return out

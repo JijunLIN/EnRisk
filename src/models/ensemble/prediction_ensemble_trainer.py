@@ -117,19 +117,19 @@ class PredictionEnsembleTrainer(pl.LightningModule):
             del data["data_n_type"]
 
         batch_size = data["agent"]["position"].size(0)
-        out = self.model.shared(data)
+        #out = self.model.shared(data)
 
         for model in self.model.parallel:
             # bootstrap sampling
             indices = torch.randint(0, batch_size, (batch_size,))
-            print(f"bootstrap sampling, {indices} selected")
+            #print(f"bootstrap sampling, {indices} selected")
             data_bootstrap = extract_by_indices(data, indices)
 
             res = self.model.shared(data_bootstrap)
             res["prediction"] = model(res["x"], res["A"])
             
-            losses = self._compute_objectives(res, data)
-            metrics = self._compute_metrics(res, data, prefix)
+            losses = self._compute_objectives(res, data_bootstrap)
+            metrics = self._compute_metrics(res, data_bootstrap, prefix)
 
             losseses.append(losses)
             metricses.append(metrics)

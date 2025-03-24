@@ -1,4 +1,4 @@
-import os
+import os, csv, scipy.io
 import time
 from pathlib import Path
 from typing import List, Optional, Type
@@ -94,10 +94,13 @@ class PlutoPlanner(AbstractPlanner):
         self._emergency_brake = EmergencyBrake()
         self._learning_based_score_weight = learning_based_score_weight
 
+        self._timestamp = 0
+
         if render:
             self._scene_render = NuplanScenarioRender()
             if save_dir is not None:
                 self.video_dir = Path(save_dir+"/video")
+                self.log_dir = Path(save_dir + "/log")
             else:
                 self.video_dir = Path(os.getcwd())
             self.video_dir.mkdir(exist_ok=True, parents=True)
@@ -173,6 +176,9 @@ class PlutoPlanner(AbstractPlanner):
         return planning_trajectory
 
     def _run_planning_once(self, current_input: PlannerInput):
+        self._timestamp += 1 #self._step_interval
+        risk = None
+
         ego_state = current_input.history.ego_states[-1]
 
         planner_feature = self._planner_feature_builder.get_features_from_simulation(
@@ -183,59 +189,78 @@ class PlutoPlanner(AbstractPlanner):
             [planner_feature.to_feature_tensor()]
         ).to_device(self.device)
 
-        out = self._planner.forward(planner_feature_torch.data)
+        out = self._planner.forward(planner_feature_torch.data)  # use forward of model
+        #print(np.array2string(out["output_prediction"][0].cpu().numpy(), precision=3, suppress_small=True))
+        
         candidate_trajectories = (
             out["candidate_trajectories"][0].cpu().numpy().astype(np.float64)
         )
         probability = out["probability"][0].cpu().numpy()
+        
+        trajectories = None
+        if "trajectories" in out:
+            trajectories = [traj[0].cpu().numpy().astype(np.float64) for traj in out["trajectories"]]
 
+        predictions = []
         if self._use_prediction:
-            predictions = out["output_prediction"][0].cpu().numpy()
+            if "output_predictions" in out:
+                for pre in out["output_predictions"]:
+                    predictions.append(pre[0].cpu().numpy())
+            elif "output_prediction" in out:
+                predictions = [out["output_prediction"][0].cpu().numpy()]
         else:
-            predictions = None
+            predictions = [None]
 
         ref_free_trajectory = (
             (out["output_ref_free_trajectory"][0].cpu().numpy().astype(np.float64))
             if "output_ref_free_trajectory" in out
             else None
         )
-
+        # use probablity from the model as learning_based_score
         candidate_trajectories, learning_based_score = self._trim_candidates(
             candidate_trajectories,
             probability,
             current_input.history.ego_states[-1],
             ref_free_trajectory,
         )
-
-        rule_based_scores = self._trajectory_evaluator.evaluate(
+        # use trajs, traffic lights, agent, map, baseline to evaluate
+        # a score based on rule (with no prediction)
+        rule_based_scores = []
+        pre_shape = predictions[0].shape
+        for prediction in predictions:
+            assert pre_shape == prediction.shape, "different prediction shape between ensemble network output!"
+            rule_based_scores.append(self._trajectory_evaluator.evaluate(
             candidate_trajectories=candidate_trajectories,
             init_ego_state=current_input.history.ego_states[-1],
             detections=current_input.history.observations[-1],
             traffic_light_data=current_input.traffic_light_data,
             agents_info=self._get_agent_info(
-                planner_feature.data, predictions, ego_state
+                planner_feature.data, prediction, ego_state
             ),
             route_lane_dict=self._scenario_manager.get_route_lane_dicts(),
             drivable_area_map=self._scenario_manager.drivable_area_map,
             baseline_path=self._get_ego_baseline_path(
                 self._scenario_manager.get_cached_reference_lines(), ego_state
             ),
-        )
-
+            ))
+        rule_based_scores = np.stack(rule_based_scores)
+        #print(rule_based_scores.shape)
+        # so the final score is rulebased + learnbased * weight
         final_scores = (
-            rule_based_scores + self._learning_based_score_weight * learning_based_score
+            np.min(rule_based_scores, axis=0) + self._learning_based_score_weight * learning_based_score
         )
-
+        #print(np.stack(predictions).shape)
         best_candidate_idx = final_scores.argmax()
-
+        # brake at the last
         trajectory = self._emergency_brake.brake_if_emergency(
             ego_state,
             self._trajectory_evaluator.time_to_at_fault_collision(best_candidate_idx),
             candidate_trajectories[best_candidate_idx],
         )
-
-        # no emergency
+        if_emergency = True
+        # no emergency then give the "best" traj
         if trajectory is None:
+            if_emergency = False
             trajectory = candidate_trajectories[best_candidate_idx, 1:]
             trajectory = InterpolatedTrajectory(
                 global_trajectory_to_states(
@@ -246,36 +271,29 @@ class PlutoPlanner(AbstractPlanner):
                     include_ego_state=False,
                 )
             )
-        #print(out["trajectories"][0])
-        #print(trajectories[0])
-        risk = 0
-        if "trajectories" in out:
-            trajectories = [traj.cpu().numpy() for traj in out["trajectories"]]
-        #id = str(self._planner_ckpt).split("/")[-1]
-            with open(f"/home/jjlin/pluto_dev/result/log/{self._scenario.log_name}_{self._scenario.token}.txt"
-                    ,'a') as file:
-                if trajectories is not None:
-                    #file.write("0,0,0*\n")
-                    for traj in trajectories:
-                        #print(np.shape(traj))
-                        for i in range(traj.shape[1]):
-                            file.write(str(traj[0][i][0])+"," +
-                                    str(traj[0][i][1])+"," +
-                                    str(traj[0][i][2])+
-                                    "*")
-                        file.write("|")
-                    file.write("\n")
-            for traj in trajectories:
-                result_x = []
-                result_y = []
-                result_heading = []
-                for i in range(traj.shape[1]):
-                    result_x.append(traj[0][i][0])
-                    result_y.append(traj[0][i][1])
-                    result_heading.append(traj[0][i][2])
-                risk += (np.var(result_x) + np.var(result_y) + np.var(result_heading))
-            risk = risk/self._planner.num_ensemble
+        # print(np.stack(predictions).shape)  (num_ensemble, agents, time_steps, (x,y,h,..))
+        risk_dict = {"emergency": if_emergency,
+                     "traj_var": self._cal_val(candidate_trajectories),
+                     "prob_var": np.var(learning_based_score),
+                     "traj_chosed": best_candidate_idx,
+                     "final_score": final_scores[best_candidate_idx],
+                     "rule_based_scores": rule_based_scores,
+                     "final_scores": final_scores,
+                     "pred_var": np.mean(np.mean(np.var(np.stack(predictions), axis=0), axis=2), axis=1)
+        }
+        if trajectories is not None:
+            # print(np.stack(trajectories).shape) (num_ensemble, time_steps, (x,y,h))
+            risk_dict["e_traj_var"] = self._cal_val(np.stack(trajectories))
 
+        
+        risk = f"""Candidate traj var: {risk_dict['traj_var']}
+Candidate traj prob var: {risk_dict['prob_var']}
+Candidate traj rule-based score var: {np.var(risk_dict['rule_based_scores'], axis=0)}
+Traj var: {risk_dict["e_traj_var"] if "e_traj_var" in risk_dict else "None"}
+Traj Chosed: {risk_dict['traj_chosed']} Final Score: {risk_dict['final_score']}
+Predictions var: {np.array2string(risk_dict['pred_var'], precision=2, suppress_small=False)}
+"""
+        self.log_data_to_mat(risk_dict)
         if self._render:
             self._imgs.append(
                 self._scene_render.render_from_simulation(
@@ -286,7 +304,7 @@ class PlutoPlanner(AbstractPlanner):
                     iteration=current_input.iteration.index,
                     planning_trajectory=self._global_to_local(trajectory, ego_state),
                     candidate_trajectories=self._global_to_local(
-                        candidate_trajectories[rule_based_scores > 0], ego_state
+                        candidate_trajectories[np.mean(rule_based_scores, axis=0) > 0], ego_state
                     ),
                     candidate_index=best_candidate_idx,
                     predictions=predictions,
@@ -297,6 +315,60 @@ class PlutoPlanner(AbstractPlanner):
 
 
         return trajectory
+    
+    def log_data_to_mat(self, data):
+        """
+        将传入的字典数据保存为 MATLAB 的 .mat 文件，支持追加数据。
+
+        参数:
+        data (dict): 要保存的数据，字典的值可以是单个值、列表或嵌套结构。
+        filename (str): 保存数据的 .mat 文件名。
+        """
+        id = str.split(self._planner_ckpt, "/")[-1]
+        filename = f"{self.log_dir}/{self._scenario.log_name}_{self._scenario.token}_{id}.mat"
+        if os.path.exists(filename):
+            mat_data = scipy.io.loadmat(filename)
+        else:
+            mat_data = {}
+
+        # 生成唯一的变量名
+        var_name = f'{self._timestamp}'
+
+        # 将新数据保存到.mat文件中
+        mat_data[var_name] = data
+        scipy.io.savemat(filename, mat_data)
+
+
+    def log_data_to_csv(self, data):
+        """
+        save in csv
+        """
+        id = str.split(self._planner_ckpt, "/")[-1]
+        filename = f"{self.log_dir}/{self._scenario.log_name}_{self._scenario.token}_{id}.txt"
+        file_exists = os.path.isfile(filename)
+
+        with open(filename, mode='a', newline='') as file:
+            writer = csv.writer(file)
+
+            if not file_exists and isinstance(data, dict):
+                writer.writerow(data.keys())
+
+            if isinstance(data, dict):
+                writer.writerow(data.values())
+            elif isinstance(data, list):
+                writer.writerow(data)
+            else:
+                raise ValueError("Data not supported, list or dict allowed")
+
+    def _cal_val(self, data):
+        """
+        give val: \sum_{i=0}^{m}\sum_{j=0}^{n}{(x_{ij}-x_{i mean})^2}
+            data: [m, n]
+        """
+        assert data.shape[-1] > 1 and data.shape[-2] > 1, f"_cal_val: can't handle data shape{data.shape}" 
+        data = data.reshape(-1, data.shape[-2], data.shape[-1])
+        res = np.mean(np.var(data, axis=0))
+        return res
 
     def _trim_candidates(
         self,
@@ -306,13 +378,15 @@ class PlutoPlanner(AbstractPlanner):
         ref_free_trajectory: np.ndarray = None,
     ) -> npt.NDArray[np.float32]:
         """
+        give self_topk traj according to probability and transfer to global axis
         candidate_trajectories: (n_ref, n_mode, 80, 3)
         probability: (n_ref, n_mode)
+        T timesteps  C (x, y, heading)
         """
         if len(candidate_trajectories.shape) == 4:
             n_ref, n_mode, T, C = candidate_trajectories.shape
             candidate_trajectories = candidate_trajectories.reshape(-1, T, C)
-            probability = probability.reshape(-1)
+            probability = probability.reshape(-1)  # n_ref * n_mode
 
         sorted_idx = np.argsort(-probability)
         sorted_candidate_trajectories = candidate_trajectories[sorted_idx][: self._topk]

@@ -11,9 +11,9 @@ FILTER=$3
 CKPT=$4
 VIDEO_SAVE_DIR=$5
 
-CHALLENGE="closed_loop_nonreactive_agents"
+# CHALLENGE="closed_loop_nonreactive_agents"
 # CHALLENGE="closed_loop_reactive_agents"
-# CHALLENGE="open_loop_boxes"
+CHALLENGE="open_loop_boxes"
 
 python run_simulation.py \
     +simulation=$CHALLENGE \

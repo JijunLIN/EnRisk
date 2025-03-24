@@ -25,6 +25,8 @@ from nuplan.planning.simulation.planner.abstract_planner import (
 from src.scenario_manager.scenario_manager import ScenarioManager
 from ..utils.vis import *
 
+import textwrap
+
 AGENT_COLOR_MAPPING = {
     TrackedObjectType.VEHICLE: "#001eff",
     TrackedObjectType.PEDESTRIAN: "#9500ff",
@@ -258,7 +260,10 @@ class NuplanScenarioRender:
             self._plot_rollout_trajectories(ax, rollout_trajectories)
 
         if predictions is not None:
-            self._plot_prediction(ax, predictions)
+            #predictions = [np.array([ 1.0571526e+01,  1.2047209e+00, -4.0349650e+00, -4.9427586e+00,
+          #4.1278791e+00])]
+            for pred in predictions:
+                self._plot_prediction(ax, pred)
 
         if risk is not None:
             self._plot_risk(ax, risk)
@@ -289,7 +294,9 @@ class NuplanScenarioRender:
             string = "No Data"
         else:
             string = "Risk: " + str(risk)
-        ax.text(20,20,string,fontsize=14,color='red')
+        wrap_width = 50
+        wrapped_text = textwrap.fill(string, wrap_width)
+        ax.text(0.05,0.95,wrapped_text,fontsize=14,color='red', ha="left", va = "top", transform=ax.transAxes)
 
     def _plot_map(
         self,
@@ -450,6 +457,7 @@ class NuplanScenarioRender:
         kwargs = {"lw": 3}
         for pred in predictions:
             pred = pred[:40, ..., :2]
+            #print(pred)
             self._plot_polyline(ax, pred, cmap="winter", **kwargs)
 
     def _plot_polyline(self, ax, polyline, cmap="spring", **kwargs) -> None:
