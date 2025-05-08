@@ -481,4 +481,4 @@ class TrajectoryEvaluator:
         final_scores = multiplicate_metric_scores * weighted_metric_scores
         self._final_score = final_scores
 
-        return final_scores
+        return final_scores, self._weighted_metrics, self._multi_metrics

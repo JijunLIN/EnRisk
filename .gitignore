@@ -163,3 +163,4 @@ outputs/
 *.ckpt
 checkpoints/
 result/
+result2/

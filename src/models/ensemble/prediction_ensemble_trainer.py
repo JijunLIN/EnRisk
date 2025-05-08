@@ -103,6 +103,7 @@ class PredictionEnsembleTrainer(pl.LightningModule):
         :return: model's scalar loss
         """
         features, targets, scenarios = batch
+        print([s.token for s in scenarios])
 
         opt = self.optimizers()
         opt.zero_grad()

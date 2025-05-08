@@ -30,7 +30,7 @@ pluto_planner:
     state_attn_encoder: true
     use_hidden_proj: false
     cat_x: false
-    ref_free_traj: false
+    ref_free_traj: true
 
     feature_builder:
       _target_: src.feature_builders.pluto_feature_builder.PlutoFeatureBuilder
