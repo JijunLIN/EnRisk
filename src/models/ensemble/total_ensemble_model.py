@@ -13,6 +13,8 @@ from src.feature_builders.pluto_feature_builder import PlutoFeatureBuilder
 
 from src.models.pluto.pluto_model import PlanningModel
 
+import numpy as np
+
 # no meaning, required by nuplan
 trajectory_sampling = TrajectorySampling(num_poses=8, time_horizon=8, interval_length=1)
 
@@ -58,16 +60,24 @@ class TotalEnsembleModel(TorchModuleWrapper):
                                                 use_hidden_proj, cat_x, ref_free_traj, feature_builder)
                                                 for _ in range(num_ensemble)])
     
-    def forward(self, data):
+    def forward(self, data): # 只允许推理时调用
+        exit()
+        out = None
         reses = []
         for model in self.parallel:
             res = model(data)
             reses.append(res)
-            #probs.append(res["probability"])
-            #losses = self._compute_objectives(res, data)
-            #losseses.append(losses["loss"])
-        out = reses[0] #JJ 可能需要改为平均值方案
-        print(res[0])
+            if out is not None:
+                for key, value in res:
+                    out[key].append(value)
+            else:
+                out = {}
+                for key, value in res:
+                    out[key] = [value]
+
+        for key, value in out:
+            out[key] = torch.mean(torch.stack(value), dim=0)  #平均值方案作为推理主要输出
+            
         if not self.training:
             assert "trajectories" not in out and "output_trajectory" in out
             out["trajectories"] = [o["output_trajectory"] for o in reses]

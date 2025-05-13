@@ -19,6 +19,7 @@ from src.metrics import MR, minADE, minFDE
 from src.metrics.prediction_avg_ade import PredAvgADE
 from src.metrics.prediction_avg_fde import PredAvgFDE
 from src.optim.warmup_cos_lr import WarmupCosLR
+from ..ensemble.create_pluto_optimizer import create_pluto_optimizer
 
 from src.models.pluto.loss.esdf_collision_loss import ESDFCollisionLoss
 
@@ -37,7 +38,6 @@ class TotalEnsembleTrainer(pl.LightningModule):
         use_contrast_loss=False,
         regulate_yaw=False,
         objective_aggregate_mode: str = "mean",
-        ensemble_num:int = 5
     ) -> None:
         """
         Initializes the class.
@@ -65,7 +65,7 @@ class TotalEnsembleTrainer(pl.LightningModule):
         self.use_collision_loss = use_collision_loss
         self.use_contrast_loss = use_contrast_loss
         self.regulate_yaw = regulate_yaw
-        self.model.num_ensemble = self.num_ensemble = ensemble_num
+        self.num_ensemble = self.model.num_ensemble
 
         self.radius = model.parallel[0].radius
         self.num_modes = model.parallel[0].num_modes
@@ -78,7 +78,7 @@ class TotalEnsembleTrainer(pl.LightningModule):
 
         self.tokens = []
         self.count = []
-        for _ in range(ensemble_num):
+        for _ in range(self.num_ensemble):
             self.tokens.append([])
             self.count.append(0)
         
@@ -114,11 +114,11 @@ class TotalEnsembleTrainer(pl.LightningModule):
 
         # print([s.token for s in scenarios])
         model_idx = batch_idx % self.num_ensemble
-        for scenario in scenarios:
-            self.count[model_idx] += 1
-            if scenario.token not in self.tokens[model_idx]:
-                #print(scenario.token, end=" ")
-                self.tokens[model_idx].append(scenario.token)
+        #for scenario in scenarios:
+        #    self.count[model_idx] += 1
+        #    if scenario.token not in self.tokens[model_idx]:
+        #        #print(scenario.token, end=" ")
+        #        self.tokens[model_idx].append(scenario.token)
                 
 
         opt = self.optimizers()[model_idx]
@@ -134,18 +134,18 @@ class TotalEnsembleTrainer(pl.LightningModule):
 
         if self.training:
             self.manual_backward(losses["loss"])
-
             opt.step()
 
     def on_train_epoch_end(self) -> None:
-        for i in range(self.num_ensemble):
-            par = len(self.tokens[i])/self.count[i]
+        #for i in range(self.num_ensemble):
+        #    par = len(self.tokens[i])/self.count[i]
             #print(f"\nJJ: optim: {i} {par:.6f} ({self.count[i]}, {len(self.tokens[i])}) on {self.current_epoch}")
-        self.count = []
-        self.tokens = []
-        for _ in range(self.num_ensemble):
-            self.tokens.append([])
-            self.count.append(0)
+        #self.count = []
+        #self.tokens = []
+        #for _ in range(self.num_ensemble):
+        #    self.tokens.append([])
+        #    self.count.append(0)
+        pass
 
     def _compute_objectives(self, res, data) -> Dict[str, torch.Tensor]:
         bs, _, T, _ = res["prediction"].shape
@@ -436,6 +436,7 @@ class TotalEnsembleTrainer(pl.LightningModule):
         :param features: features batch
         :return: model's predictions
         """
+        exit()
         return self.model(features)            
         out = {
             "predictions": predictions,  # (bs, A-1, T, 2)
@@ -467,77 +468,9 @@ class TotalEnsembleTrainer(pl.LightningModule):
         all_optimizers = []
         all_schedulers = []
         for model in self.model.parallel:
-            decay = set()
-            no_decay = set()
-            whitelist_weight_modules = (
-                nn.Linear,
-                nn.Conv1d,
-                nn.Conv2d,
-                nn.Conv3d,
-                nn.MultiheadAttention,
-                nn.LSTM,
-                nn.GRU,
-            )
-            blacklist_weight_modules = (
-                nn.BatchNorm1d,
-                nn.BatchNorm2d,
-                nn.BatchNorm3d,
-                nn.SyncBatchNorm,
-                nn.LayerNorm,
-                nn.Embedding,
-            )
-            for module_name, module in model.named_modules():
-                for param_name, param in module.named_parameters():
-                    full_param_name = (
-                        "%s.%s" % (module_name, param_name) if module_name else param_name
-                    )
-                    if "bias" in param_name:
-                        no_decay.add(full_param_name)
-                    elif "weight" in param_name:
-                        if isinstance(module, whitelist_weight_modules):
-                            decay.add(full_param_name)
-                        elif isinstance(module, blacklist_weight_modules):
-                            no_decay.add(full_param_name)
-                    elif not ("weight" in param_name or "bias" in param_name):
-                        no_decay.add(full_param_name)
-            param_dict = {
-                param_name: param for param_name, param in model.named_parameters()
-            }
-            inter_params = decay & no_decay
-            union_params = decay | no_decay
-            assert len(inter_params) == 0
-            assert len(param_dict.keys() - union_params) == 0
-
-            optim_groups = [
-                {
-                    "params": [
-                        param_dict[param_name] for param_name in sorted(list(decay))
-                    ],
-                    "weight_decay": self.weight_decay,
-                },
-                {
-                    "params": [
-                        param_dict[param_name] for param_name in sorted(list(no_decay))
-                    ],
-                    "weight_decay": 0.0,
-                },
-            ]
-
-            # Get optimizer
-            optimizer = torch.optim.AdamW(
-                optim_groups, lr=self.lr, weight_decay=self.weight_decay
-            )
-            all_optimizers.append(optimizer)
-
-            # Get lr_scheduler
-            scheduler = WarmupCosLR(
-                optimizer=optimizer,
-                lr=self.lr,
-                min_lr=1e-6,
-                epochs=self.epochs,
-                warmup_epochs=self.warmup_epochs,
-            )
-            all_schedulers.append(scheduler)
+            opt, sdl = create_pluto_optimizer(model, self.weight_decay, self.lr, self.warmup_epochs, self.epochs)
+            all_optimizers.append(opt)
+            all_schedulers.append(sdl)
 
         return all_optimizers, all_schedulers
 
