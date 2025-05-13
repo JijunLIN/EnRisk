@@ -104,6 +104,12 @@ You should
 - adjust *every* yaml in config.
 - modify train_pluto_model.sh and run_pluto_planner.sh (environment variable, batch_size, CHALLENGE and so on)
 - adjust DEVICE, BATCH SIZE, WORKER NUMBER according to your device
+
+run 
+```
+wandb login
+```
+to visualize the training.
 ### Normal training
 (The training part it not fully tested)
 
@@ -113,7 +119,7 @@ Same, it is recommended to run a sanity check first:
 CUDA_VISIBLE_DEVICES=0 python run_training.py \
   py_func=train +training=train_pluto \
   worker=single_machine_thread_pool worker.max_workers=4 \
-  scenario_builder=nuplan cache.cache_path=/nuplan/exp/sanity_check cache.use_cache_without_dataset=true \
+  scenario_builder=nuplan cache.cache_path=/media/jjlin/database/nuplan/exp/sanity_check cache.use_cache_without_dataset=true \
   data_loader.params.batch_size=4 data_loader.params.num_workers=1
 ```
 
@@ -150,12 +156,17 @@ sh ./script/run_pluto_planner.sh total_ensemble_planner nuplan_mini mini_demo_sc
 Prediction ensemble PLUTO.
 ```
 sh ./script/train_pluto_model.sh train train_prediction_ensemble_pluto 20 /media/jjlin/database/nuplan/exp/tinymini
-```
 
+sh ./script/run_pluto_planner.sh prediction_ensemble_planner nuplan_mini mini_demo_scenario pe_t.ckpt /home/jjlin/pluto_dev/result
 
+sh ./script/run_pluto_planner.sh prediction_ensemble_planner nuplan_mini mini_demo_scenario pe_tt.ckpt /home/jjlin/pluto_dev/result
 ```
- sh ./script/run_pluto_planner.sh prediction_ensemble_planner nuplan_mini mini_demo_scenario pe_t.ckpt /home/jjlin/pluto_dev/result
- sh ./script/run_pluto_planner.sh prediction_ensemble_planner nuplan_mini mini_demo_scenario pe_tt.ckpt /home/jjlin/pluto_dev/result
+MoE PLUTO
+```
+sh ./script/train_pluto_model.sh train train_MoE_ensemble_pluto 20 /media/jjlin/database/nuplan/exp/tinymini
+
+sh ./script/run_pluto_planner.sh prediction_MoE_planner nuplan_mini mini_demo_scenario pe_t.ckpt /home/jjlin/pluto_dev/result
+
 ```
 
 
@@ -184,9 +195,10 @@ The rendered simulation video will be saved to the specified directory (need cha
 ## To Do
 
 - [ ] improve docs
-- [ ] total ensemble
-- [ ] local ensemble
-- [ ] visualization
+- [x] total ensemble
+- [x] local ensemble
+- [x] visualization
+- [ ] evaluate
 - [ ] utils
 
 ## Citation

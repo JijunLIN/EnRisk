@@ -245,9 +245,6 @@ class PlanningModelParrallel(TorchModuleWrapper):
         self.apply(self._init_weights)
 
 
-
-        self.agent_predictor = AgentPredictor(dim=dim, future_steps=future_steps)
-
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
             torch.nn.init.xavier_uniform_(m.weight)

@@ -67,6 +67,9 @@ class LightningTrainer(pl.LightningModule):
         self.radius = model.radius
         self.num_modes = model.num_modes
         self.mode_interval = self.radius / self.num_modes
+        
+        self.tokens = []
+        self.count = 0
 
         if use_collision_loss:
             self.collision_loss = ESDFCollisionLoss()
@@ -99,6 +102,14 @@ class LightningTrainer(pl.LightningModule):
         :return: model's scalar loss
         """
         features, targets, scenarios = batch
+        
+
+        for scenario in scenarios:
+            self.count += 1
+            if scenario.token not in self.tokens:
+                #print(scenario.token, end=" ")
+                self.tokens.append(scenario.token)
+                
         res = self.forward(features["feature"].data)
 
         losses = self._compute_objectives(res, features["feature"].data)
@@ -106,6 +117,13 @@ class LightningTrainer(pl.LightningModule):
         self._log_step(losses["loss"], losses, metrics, prefix)
 
         return losses["loss"] if self.training else 0.0
+    
+    def on_train_epoch_end(self) -> None:
+        par = len(self.tokens)/self.count
+        #print(f"\nJJ: repeat par {par:.6f} ({self.count}, {len(self.tokens)}) on {self.current_epoch}")
+        self.count = 0
+        self.tokens = []
+
 
     def _compute_objectives(self, res, data) -> Dict[str, torch.Tensor]:
         bs, _, T, _ = res["prediction"].shape

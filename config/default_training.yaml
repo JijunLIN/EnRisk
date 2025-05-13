@@ -52,10 +52,11 @@ warmup_epochs: 3
 lr: 1e-3
 weight_decay: 0.0001
 checkpoint:
+num_ensemble: 5
 
 # wandb settings
 wandb:
-  mode: disable
+  mode: online
   project: nuplan-pluto
   name: ${experiment_name}
   log_model: all

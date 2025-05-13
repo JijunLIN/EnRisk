@@ -65,7 +65,7 @@ class TotalEnsembleTrainer(pl.LightningModule):
         self.use_collision_loss = use_collision_loss
         self.use_contrast_loss = use_contrast_loss
         self.regulate_yaw = regulate_yaw
-        self.num_ensemble = model.num_ensemble
+        self.model.num_ensemble = self.num_ensemble = ensemble_num
 
         self.radius = model.parallel[0].radius
         self.num_modes = model.parallel[0].num_modes
@@ -75,6 +75,13 @@ class TotalEnsembleTrainer(pl.LightningModule):
             self.collision_loss = ESDFCollisionLoss()
 
         self.automatic_optimization = False
+
+        self.tokens = []
+        self.count = []
+        for _ in range(ensemble_num):
+            self.tokens.append([])
+            self.count.append(0)
+        
 
     def on_fit_start(self) -> None:
         metrics_collection = MetricCollection(
@@ -92,7 +99,7 @@ class TotalEnsembleTrainer(pl.LightningModule):
         }
 
     def _step(
-        self, batch: Tuple[FeaturesType, TargetsType, ScenarioListType], prefix: str
+        self, batch: Tuple[FeaturesType, TargetsType, ScenarioListType], prefix: str, batch_idx
     ) -> torch.Tensor:
         """
         Propagates the model forward and backwards and computes/logs losses and metrics.
@@ -105,50 +112,40 @@ class TotalEnsembleTrainer(pl.LightningModule):
         """
         features, targets, scenarios = batch
 
-        opt = self.optimizers()
-        opt.zero_grad()
-        
+        # print([s.token for s in scenarios])
+        model_idx = batch_idx % self.num_ensemble
+        for scenario in scenarios:
+            self.count[model_idx] += 1
+            if scenario.token not in self.tokens[model_idx]:
+                #print(scenario.token, end=" ")
+                self.tokens[model_idx].append(scenario.token)
+                
+
+        opt = self.optimizers()[model_idx]
         data=features["feature"].data
-
-        batch_size = data["agent"]["position"].size(0)
-        #print(batch_size)
-        #print_dict_structure(data)
-        #print(data.keys()) ['agent', 'map', 'reference_line', 'static_objects', 'current_state', 'origin', 'angle', 'cost_maps']
-        if "data_n_valid_mask" in data:
-            del data["data_n_valid_mask"]
-        if "data_n_type" in data:
-            del data["data_n_type"]
-
-        for model in self.model.parallel:
-            # bootstrap sampling
-            indices = torch.randint(0, batch_size, (batch_size,))
-            #with open("/home/jjlin/pluto_dev/result/log/2021.08.17.16.57.11_veh-08_01200_01636_9e30155b8bb55fd9_test.ckpt.txt", "a") as file
-            #    file.write(f"bootstrap sampling, {indices} selected")
-            data_bootstrap = extract_by_indices(data, indices)
-
-            res = model(data_bootstrap)
+        
+        opt.zero_grad()
             
-            losses = self._compute_objectives(res, data_bootstrap)
-            metrics = self._compute_metrics(res, data_bootstrap, prefix)
+        res = self.model.parallel[model_idx](data)
 
-            if self.training:
-                self.manual_backward(losses["loss"], retain_graph=True)
-
+        losses = self._compute_objectives(res, data)
+        metrics = self._compute_metrics(res, data, prefix)
         self._log_step(losses["loss"], losses, metrics, prefix)
 
-        opt.step()
-    """
-    def on_after_backward(self):
-        with open("/home/jjlin/pluto_dev/result/log/2021.08.17.16.57.11_veh-08_01200_01636_9e30155b8bb55fd9_test.ckpt.txt", "a") as file:
-            for name, param in self.named_parameters():
-                if param.grad is not None:
-                    file.write(f"{name} 的梯度被更新了\n")
-                else:
-                    #print(f"{name} 的梯度未被更新")
-                    pass"""
-    
-    def on_train_batch_end(self, outputs, batch, batch_idx):  # JJ？
-        torch.cuda.empty_cache()
+        if self.training:
+            self.manual_backward(losses["loss"])
+
+            opt.step()
+
+    def on_train_epoch_end(self) -> None:
+        for i in range(self.num_ensemble):
+            par = len(self.tokens[i])/self.count[i]
+            #print(f"\nJJ: optim: {i} {par:.6f} ({self.count[i]}, {len(self.tokens[i])}) on {self.current_epoch}")
+        self.count = []
+        self.tokens = []
+        for _ in range(self.num_ensemble):
+            self.tokens.append([])
+            self.count.append(0)
 
     def _compute_objectives(self, res, data) -> Dict[str, torch.Tensor]:
         bs, _, T, _ = res["prediction"].shape
@@ -406,7 +403,7 @@ class TotalEnsembleTrainer(pl.LightningModule):
         :param batch_idx: batch's index (unused)
         :return: model's loss tensor
         """
-        return self._step(batch, "train")
+        return self._step(batch, "train", batch_idx)
 
     def validation_step(
         self, batch: Tuple[FeaturesType, TargetsType, ScenarioListType], batch_idx: int
@@ -418,7 +415,7 @@ class TotalEnsembleTrainer(pl.LightningModule):
         :param batch_idx: batch's index (unused)
         :return: model's loss tensor
         """
-        return self._step(batch, "val")
+        return self._step(batch, "val", batch_idx)
 
     def test_step(
         self, batch: Tuple[FeaturesType, TargetsType, ScenarioListType], batch_idx: int
@@ -430,7 +427,7 @@ class TotalEnsembleTrainer(pl.LightningModule):
         :param batch_idx: batch's index (unused)
         :return: model's loss tensor
         """
-        return self._step(batch, "test")
+        return self._step(batch, "test", batch_idx)
 
     def forward(self, features: FeaturesType) -> TargetsType:
         """
@@ -467,91 +464,88 @@ class TotalEnsembleTrainer(pl.LightningModule):
 
         :return: optimizer or dictionary of optimizers and schedules
         """
-        decay = set()
-        no_decay = set()
-        whitelist_weight_modules = (
-            nn.Linear,
-            nn.Conv1d,
-            nn.Conv2d,
-            nn.Conv3d,
-            nn.MultiheadAttention,
-            nn.LSTM,
-            nn.GRU,
-        )
-        blacklist_weight_modules = (
-            nn.BatchNorm1d,
-            nn.BatchNorm2d,
-            nn.BatchNorm3d,
-            nn.SyncBatchNorm,
-            nn.LayerNorm,
-            nn.Embedding,
-        )
-        for module_name, module in self.named_modules():
-            for param_name, param in module.named_parameters():
-                full_param_name = (
-                    "%s.%s" % (module_name, param_name) if module_name else param_name
-                )
-                if "bias" in param_name:
-                    no_decay.add(full_param_name)
-                elif "weight" in param_name:
-                    if isinstance(module, whitelist_weight_modules):
-                        decay.add(full_param_name)
-                    elif isinstance(module, blacklist_weight_modules):
+        all_optimizers = []
+        all_schedulers = []
+        for model in self.model.parallel:
+            decay = set()
+            no_decay = set()
+            whitelist_weight_modules = (
+                nn.Linear,
+                nn.Conv1d,
+                nn.Conv2d,
+                nn.Conv3d,
+                nn.MultiheadAttention,
+                nn.LSTM,
+                nn.GRU,
+            )
+            blacklist_weight_modules = (
+                nn.BatchNorm1d,
+                nn.BatchNorm2d,
+                nn.BatchNorm3d,
+                nn.SyncBatchNorm,
+                nn.LayerNorm,
+                nn.Embedding,
+            )
+            for module_name, module in model.named_modules():
+                for param_name, param in module.named_parameters():
+                    full_param_name = (
+                        "%s.%s" % (module_name, param_name) if module_name else param_name
+                    )
+                    if "bias" in param_name:
                         no_decay.add(full_param_name)
-                elif not ("weight" in param_name or "bias" in param_name):
-                    no_decay.add(full_param_name)
-        param_dict = {
-            param_name: param for param_name, param in self.named_parameters()
-        }
-        inter_params = decay & no_decay
-        union_params = decay | no_decay
-        assert len(inter_params) == 0
-        assert len(param_dict.keys() - union_params) == 0
+                    elif "weight" in param_name:
+                        if isinstance(module, whitelist_weight_modules):
+                            decay.add(full_param_name)
+                        elif isinstance(module, blacklist_weight_modules):
+                            no_decay.add(full_param_name)
+                    elif not ("weight" in param_name or "bias" in param_name):
+                        no_decay.add(full_param_name)
+            param_dict = {
+                param_name: param for param_name, param in model.named_parameters()
+            }
+            inter_params = decay & no_decay
+            union_params = decay | no_decay
+            assert len(inter_params) == 0
+            assert len(param_dict.keys() - union_params) == 0
 
-        optim_groups = [
-            {
-                "params": [
-                    param_dict[param_name] for param_name in sorted(list(decay))
-                ],
-                "weight_decay": self.weight_decay,
-            },
-            {
-                "params": [
-                    param_dict[param_name] for param_name in sorted(list(no_decay))
-                ],
-                "weight_decay": 0.0,
-            },
-        ]
+            optim_groups = [
+                {
+                    "params": [
+                        param_dict[param_name] for param_name in sorted(list(decay))
+                    ],
+                    "weight_decay": self.weight_decay,
+                },
+                {
+                    "params": [
+                        param_dict[param_name] for param_name in sorted(list(no_decay))
+                    ],
+                    "weight_decay": 0.0,
+                },
+            ]
 
-        # Get optimizer
-        optimizer = torch.optim.AdamW(
-            optim_groups, lr=self.lr, weight_decay=self.weight_decay
-        )
+            # Get optimizer
+            optimizer = torch.optim.AdamW(
+                optim_groups, lr=self.lr, weight_decay=self.weight_decay
+            )
+            all_optimizers.append(optimizer)
 
-        # Get lr_scheduler
-        scheduler = WarmupCosLR(
-            optimizer=optimizer,
-            lr=self.lr,
-            min_lr=1e-6,
-            epochs=self.epochs,
-            warmup_epochs=self.warmup_epochs,
-        )
+            # Get lr_scheduler
+            scheduler = WarmupCosLR(
+                optimizer=optimizer,
+                lr=self.lr,
+                min_lr=1e-6,
+                epochs=self.epochs,
+                warmup_epochs=self.warmup_epochs,
+            )
+            all_schedulers.append(scheduler)
 
-        return [optimizer], [scheduler]
+        return all_optimizers, all_schedulers
 
     # def on_before_optimizer_step(self, optimizer) -> None:
     #     for name, param in self.named_parameters():
     #         if param.grad is None:
     #             print("unused param", name)
 
-
-def extract_by_indices(data, indices):
-    if isinstance(data, dict):
-        return {key: extract_by_indices(value, indices) for key, value in data.items()}
-    elif isinstance(data, torch.Tensor):
-        return data[indices]
-    else:
-        return data
 
 def print_dict_structure(d: Dict[str, any], indent: int = 0) -> None:
     """

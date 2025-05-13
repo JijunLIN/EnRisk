@@ -59,17 +59,17 @@ class TotalEnsembleModel(TorchModuleWrapper):
                                                 for _ in range(num_ensemble)])
     
     def forward(self, data):
-        losseses = []
         reses = []
-        probs = []
         for model in self.parallel:
             res = model(data)
             reses.append(res)
             #probs.append(res["probability"])
             #losses = self._compute_objectives(res, data)
             #losseses.append(losses["loss"])
-        out = reses[0] #JJ
-        assert "trajectories" not in out and "output_trajectory" in out
-        out["trajectories"] = [o["output_trajectory"] for o in reses]
-        out["output_predictions"] = [o["output_prediction"] for o in reses]
+        out = reses[0] #JJ 可能需要改为平均值方案
+        print(res[0])
+        if not self.training:
+            assert "trajectories" not in out and "output_trajectory" in out
+            out["trajectories"] = [o["output_trajectory"] for o in reses]
+            out["output_predictions"] = [o["output_prediction"] for o in reses]
         return out

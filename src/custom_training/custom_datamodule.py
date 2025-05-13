@@ -31,6 +31,27 @@ logger = logging.getLogger(__name__)
 
 DataModuleNotSetupError = RuntimeError('Data module has not been setup, call "setup()"')
 
+class BootstrapDataset(torch.utils.data.Dataset):
+    """为集成学习创建Bootstrap样本的Dataset包装器"""
+    def __init__(self, base_dataset: torch.utils.data.Dataset, num_ensemble: int = 5):
+        self.base_dataset = base_dataset
+        self.num_ensemble = num_ensemble
+        self.indices = [
+            torch.randint(
+                low=0, 
+                high=len(base_dataset), 
+                size=(len(base_dataset),)  # 保持与原数据集相同大小
+            ).numpy() for _ in range(num_ensemble)
+        ]
+    
+    def __getitem__(self, index):
+        replica_idx = index // self.num_ensemble
+        data_idx = index % self.num_ensemble
+        return self.base_dataset[int(self.indices[data_idx][replica_idx])]
+    
+    def __len__(self):
+        return len(self.base_dataset) * self.num_ensemble
+
 
 def create_dataset(
     samples: List[AbstractScenario],
@@ -38,6 +59,7 @@ def create_dataset(
     dataset_fraction: float,
     dataset_name: str,
     augmentors: Optional[List[AbstractAugmentor]] = None,
+    num_ensemble = 5
 ) -> torch.utils.data.Dataset:
     """
     Create a dataset from a list of samples.
@@ -54,11 +76,16 @@ def create_dataset(
     selected_scenarios = random.sample(samples, num_keep)
 
     logger.info(f"Number of samples in {dataset_name} set: {len(selected_scenarios)}")
-    return ScenarioDataset(
+    base_dataset = ScenarioDataset(
         scenarios=selected_scenarios,
         feature_preprocessor=feature_preprocessor,
         augmentors=augmentors,
     )
+    print(f"JJ: creating dataset, {dataset_name}, {num_ensemble}, {augmentors}")
+    # 仅在训练时启用Bootstrap
+    if dataset_name == "train" and num_ensemble > 1:
+        return BootstrapDataset(base_dataset, num_ensemble)
+    return base_dataset
 
 
 def distributed_weighted_sampler_init(
@@ -116,6 +143,7 @@ class CustomDataModule(pl.LightningDataModule):
         dataloader_params: Dict[str, Any],
         scenario_type_sampling_weights: DictConfig,
         worker: WorkerPool,
+        num_ensemble = 5,
         augmentors: Optional[List[AbstractAugmentor]] = None,
     ) -> None:
         """
@@ -166,6 +194,8 @@ class CustomDataModule(pl.LightningDataModule):
         # Worker for multiprocessing to speed up initialization of datasets
         self._worker = worker
 
+        self.num_ensemble = num_ensemble
+
     @property
     def feature_and_targets_builder(self) -> FeaturePreprocessor:
         """Get feature and target builders."""
@@ -193,6 +223,7 @@ class CustomDataModule(pl.LightningDataModule):
                 self._train_fraction,
                 "train",
                 self._augmentors,
+                num_ensemble=self.num_ensemble
             )
 
             # Validation Dataset
@@ -206,6 +237,7 @@ class CustomDataModule(pl.LightningDataModule):
                 self._feature_preprocessor,
                 self._val_fraction,
                 "validation",
+                num_ensemble=self.num_ensemble
             )
         elif stage == "validate":
             # Validation Dataset
@@ -219,6 +251,7 @@ class CustomDataModule(pl.LightningDataModule):
                 self._feature_preprocessor,
                 self._val_fraction,
                 "validation",
+                num_ensemble=self.num_ensemble
             )
         elif stage == "test":
             # Testing Dataset
@@ -228,7 +261,8 @@ class CustomDataModule(pl.LightningDataModule):
             assert len(test_samples) > 0, "Splitter returned no test samples"
 
             self._test_set = create_dataset(
-                test_samples, self._feature_preprocessor, self._test_fraction, "test"
+                test_samples, self._feature_preprocessor, self._test_fraction, "test",
+                num_ensemble=self.num_ensemble
             )
         else:
             raise ValueError(f'Stage must be one of ["fit", "test"], got ${stage}.')
@@ -241,7 +275,7 @@ class CustomDataModule(pl.LightningDataModule):
         """
         pass
 
-    def train_dataloader(self) -> torch.utils.data.DataLoader:
+    def train_dataloader(self) -> List[torch.utils.data.DataLoader]:
         """
         Create the training dataloader.
         :raises RuntimeError: If this method is called without calling "setup()" first.
@@ -252,6 +286,7 @@ class CustomDataModule(pl.LightningDataModule):
 
         # Initialize weighted sampler
         if self._scenario_type_sampling_weights.enable:
+            exit()
             weighted_sampler = distributed_weighted_sampler_init(
                 scenario_dataset=self._train_set,
                 scenario_sampling_weights=self._scenario_type_sampling_weights.scenario_type_weights,

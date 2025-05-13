@@ -123,8 +123,16 @@ def build_lightning_datamodule(
     # Build dataset scenarios
     scenarios = build_scenarios(cfg, worker, model)
 
+    #print(cfg.model)
+    if cfg.model._target_ == "src.models.pluto.pluto_model.PlanningModel" or cfg.model._target_ == "src.models.ensemble.prediction_MoE_model.PredictionMoEModel":
+        num_ensemble = 1
+    else:
+        num_ensemble = cfg.num_ensemble
+    #print(num_ensemble)
+    #print(augmentors)
     # Create datamodule
     datamodule: pl.LightningDataModule = CustomDataModule(
+        num_ensemble=num_ensemble,
         feature_preprocessor=feature_preprocessor,
         splitter=splitter,
         all_scenarios=scenarios,
@@ -134,7 +142,7 @@ def build_lightning_datamodule(
         scenario_type_sampling_weights=cfg.scenario_type_weights.scenario_type_sampling_weights,
         **cfg.data_loader.datamodule,
     )
-
+    
     return datamodule
 
 
