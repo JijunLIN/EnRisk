@@ -166,9 +166,7 @@ MoE PLUTO
 sh ./script/train_pluto_model.sh train train_MoE_ensemble_pluto 20 /media/jjlin/database/nuplan/exp/tinymini
 
 sh ./script/run_pluto_planner.sh prediction_MoE_planner nuplan_mini mini_demo_scenario pe_t.ckpt /home/jjlin/pluto_dev/result
-
 ```
-
 
 ## Checkpoint
 
@@ -202,3 +200,61 @@ The rendered simulation video will be saved to the specified directory (need cha
 - [ ] utils
 
 ## Citation
+
+
+## appendix: docker
+
+```
+# 列出本机的所有 docker容器：
+docker ps -a
+# 列出本机的运行中的 docker容器：
+docker ps
+# 列出本机的所有 image 文件：
+docker images
+```
+删除并创建容器
+```
+docker stop enrisk && docker rm enrisk
+docker run --name enrisk -idt continuumio/miniconda3
+```
+进入容器、查看镜像
+```
+docker exec -it enrisk /bin/bash
+docker images
+```
+复制conda环境和代码
+```
+docker cp /home/jjlin/anaconda3/envs/pluto enrisk:/opt/conda/envs
+docker cp /home/jjlin/pluto_dev enrisk:/root
+docker cp /home/jjlin/nuplan-devkit enrisk:/root
+```
+
+删除、创建镜像并保存镜像
+```
+docker rmi image_enrisk
+docker commit -a 'author' -m 'instruction' enrisk image_enrisk
+docker save -o image_enrisk.tar image_enrisk
+```
+
+宿主机
+```
+# 读取文件
+docker load -i image_enrisk.tar
+# 创建容器 挂载nuplan路径 需要修改
+docker run --name enrisk -v /media/jjlin/database/nuplan:/media/jjlin/database/nuplan -idt image_enrisk 
+# 进入容器
+docker exec -it enrisk /bin/bash
+# 初始配置
+conda activate pluto
+
+sed -i '1s|^.*$|#!/opt/conda/envs/pluto/bin/python|' /opt/conda/envs/pluto/bin/pip
+sed -i '1s|^.*$|#!/opt/conda/envs/pluto/bin/python|' /opt/conda/envs/pluto/bin/pip3
+
+cd root/nuplan-devkit
+pip install -e .
+
+cd ../pluto_dev
+
+
+# 检查CUDA版本，H100可能是12.1，更改依赖包版本
+```

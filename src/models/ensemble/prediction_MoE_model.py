@@ -308,9 +308,8 @@ class MoELayer(nn.Module):
                         )
         outputs = []
         if not self.training:
-            for expert_idx in range(self.num_ensemble):
-                ## 需要你补充代码，在推理时需要输出每个专家的输出和响应概率，储存在outputs中
-                pass
+            ## 需要你补充代码，在推理时需要输出已选定专家的输出和响应概率，储存在outputs中
+            pass
         
         # 4. 保存路由信息（用于梯度计算）
         self.last_router_logits = router_logits

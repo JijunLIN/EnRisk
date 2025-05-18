@@ -45,6 +45,8 @@ STOPPED_SPEED_THRESHOLD = 5e-03  # [m/s] (ttc)
 PROGRESS_DISTANCE_THRESHOLD = 0.1  # [m] (progress)
 MAX_OVERSPEED_VALUE_THRESHOLD = 2.23  # [m/s] (speed limit)
 
+ENRISKWEIGHT = 1.0
+
 
 class TrajectoryEvaluator:
     def __init__(
@@ -82,6 +84,10 @@ class TrajectoryEvaluator:
 
         self.progress_score = None
 
+        self._enrisk = None
+        self._ttc = None
+        self._weighted_ttc = None
+
     def time_to_at_fault_collision(self, rollout_idx: int) -> float:
         return self._at_fault_collision_time[rollout_idx]
 
@@ -95,7 +101,13 @@ class TrajectoryEvaluator:
         route_lane_dict: Dict[str, LaneGraphEdgeMapObject],
         drivable_area_map: Optional[OccupancyMap],
         baseline_path: Optional[LineString],
+        enrisk = None
     ):
+        # reset功能：输入轨迹、路网、地图、参考路径
+        # 计算自车候选轨迹前滚状态
+        # 更新世界状态
+        # 重置各个分数、指标等
+        self._enrisk = enrisk
         self._reset(
             candidate_trajectories=candidate_trajectories,
             init_ego_state=init_ego_state,
@@ -106,11 +118,13 @@ class TrajectoryEvaluator:
             drivable_area_map=drivable_area_map,
             baseline_path=baseline_path,
         )
-
+        # 根据未来预测自车状态更新多车道、单车道、可行驶、逆向车道掩码，并生成数组
         self._update_ego_footprints()
-
+        # 更新_at_fault_collision_time，分数数组
         self._evaluate_no_at_fault_collisions()
+        # 根据后部状态更新可行驶区域分数，0，1指标
         self._evaluate_drivable_area_compliance()
+        # 根据前滚状态差分计算方向问题，严格禁止倒车，禁止对向车道行驶
         self._evaluate_driving_direction_compliance()
 
         self._evaluate_time_to_collision()
@@ -373,10 +387,17 @@ class TrajectoryEvaluator:
                         ego_in_multiple_lanes_or_nondrivable_area
                         and collision_at_lateral
                     ):
-                        ttc_score[rollout_idx] = 0.0
+                        ttc = (t+step)*self._dt
+                        weighted_ttc = None
+                        if self._enrisk is not None:  # risk is on
+                            weighted_ttc = ttc / (1+ ENRISKWEIGHT * self._enrisk["preds_risk"][token])
+                            ttc_score[rollout_idx] = weighted_ttc
+                        else:
+                            ttc_score[rollout_idx] = ttc
                         collided_tokens[rollout_idx].append(token)
-
-        self._weighted_metrics[WeightedMetricIndex.TTC] = ttc_score
+        self._weighted_ttc = weighted_ttc
+        self._ttc = ttc
+        self._weighted_metrics[WeightedMetricIndex.TTC] = ttc_score / np.max(ttc_score)
 
     def _evaluate_driving_direction_compliance(self):
         displacement = np.linalg.norm(

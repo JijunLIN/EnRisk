@@ -415,7 +415,6 @@ class LightningTrainer(pl.LightningModule):
         :param features: features batch
         :return: model's predictions
         """
-        exit()
         return self.model(features)
 
     def configure_optimizers(

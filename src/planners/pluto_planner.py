@@ -204,14 +204,17 @@ class PlutoPlanner(AbstractPlanner):
             trajectories = [traj[0].cpu().numpy().astype(np.float64) for traj in out["trajectories"]]
 
         predictions = []
+        prediction = None
+        MoE_prob = []
         if self._use_prediction:
             if "output_predictions" in out:
                 for pre in out["output_predictions"]:
                     predictions.append(pre[0].cpu().numpy())
+                prediction = out["output_prediction"][0].cpu().numpy()
             elif "output_prediction" in out:
-                predictions = [out["output_prediction"][0].cpu().numpy()]
+                prediction = out["output_prediction"][0].cpu().numpy()
         else:
-            predictions = [None]
+            predictions = None
 
         ref_free_trajectory = (
             (out["output_ref_free_trajectory"][0].cpu().numpy().astype(np.float64))
@@ -225,6 +228,10 @@ class PlutoPlanner(AbstractPlanner):
         # ref_free_trajectory: [?]
         # trajectories: [trajs1, trajs2, ...] num_ensemble
         # predictions: [preds1, preds2, ...] num_ensemble
+        # if pluto: candidate_trajectories, probability, prediction
+        # if total_ensemble: ..., ..., prediction, predictions, trajectories
+        # if prediction_ensemble: ..., ..., ..., ...
+        # if MoE_ensemble: ..., ..., ..., predictions([pred1, ...]), todo
 
         # use probablity from the model as learning_based_score
         # trim top_k trajs: default
@@ -236,13 +243,13 @@ class PlutoPlanner(AbstractPlanner):
         )
         # use trajs, traffic lights, agent, map, baseline to evaluate
         # a score based on rule (with no prediction)
-        rule_based_scores = []
+        #rule_based_scores = []
         metrics = []
-        pre_shape = predictions[0].shape
+        enrisk = None
+        if predictions is not None:
+            enrisk = cal_enrisk(trajectories, predictions, planner_feature.data)
 
-        for prediction in predictions:
-            assert pre_shape == prediction.shape, "different prediction shape between ensemble network output!"
-            final_scores, weighted_metrics, multi_metrics = self._trajectory_evaluator.evaluate(
+        rule_based_scores, weighted_metrics, multi_metrics = self._trajectory_evaluator.evaluate(
                 candidate_trajectories=candidate_trajectories,
                 init_ego_state=current_input.history.ego_states[-1],
                 detections=current_input.history.observations[-1],
@@ -255,26 +262,28 @@ class PlutoPlanner(AbstractPlanner):
                 baseline_path=self._get_ego_baseline_path(
                     self._scenario_manager.get_cached_reference_lines(), ego_state
                 ),
+                enrisk=enrisk
             )
-            rule_based_scores.append(final_scores)
-            metrics.append(np.concatenate((weighted_metrics, multi_metrics), axis=0))
-        rule_based_scores = np.stack(rule_based_scores)
-        metrics = np.stack(metrics)  # (num_ensemble, 7, num_traj)
+        #rule_based_scores.append(final_scores)
+        # metrics.append(np.concatenate((weighted_metrics, multi_metrics), axis=0))
+        #rule_based_scores = np.stack(rule_based_scores)
+        metrics = np.concatenate(weighted_metrics, multi_metrics)
         # final score is rulebased + learnbased * weight
-        best_ensemble_index = np.argmin(rule_based_scores, axis=0)
+        # best_ensemble_index = np.argmin(rule_based_scores, axis=0)
         #out = rule_based_scores[best_ensemble_index, np.arange(rule_based_scores.shape[1])]
         #print(out)
         #print(np.min(rule_based_scores, axis=0))
         final_scores = (
-            rule_based_scores[best_ensemble_index, np.arange(rule_based_scores.shape[1])]
+            # rule_based_scores[best_ensemble_index, np.arange(rule_based_scores.shape[1])]
+                rule_based_scores
              + self._learning_based_score_weight * learning_based_score
         )
 
         best_candidate_idx = final_scores.argmax()
 
-        best_candtraj_metrics = metrics[best_ensemble_index[best_candidate_idx], 
-                                            :,
-                                            best_candidate_idx] # (7)
+        #best_candtraj_metrics = metrics[best_ensemble_index[best_candidate_idx], 
+        #                                    :,
+        #                                    best_candidate_idx] # (7)
         
         # brake at the last
         trajectory = self._emergency_brake.brake_if_emergency(
@@ -300,19 +309,19 @@ class PlutoPlanner(AbstractPlanner):
         elapsed = end - start
         # print(np.stack(predictions).shape)  (num_ensemble, agents, time_steps, (x,y,h,..))
         risk_dict = {"emergency": if_emergency,
-                     "traj_var": self._cal_val(candidate_trajectories),
+                     "traj_var": cal_val(candidate_trajectories),
                      "prob_var": np.var(learning_based_score),
                      "traj_chosed": best_candidate_idx,
                      "final_score": final_scores[best_candidate_idx],
-                     "rule_based_scores": rule_based_scores,
+                     #"rule_based_scores": rule_based_scores,
                      "final_scores": final_scores,
-                     "pred_var": np.mean(np.mean(np.var(np.stack(predictions), axis=0), axis=2), axis=1),
+                     "enrisk": enrisk,
                      "step_time": elapsed,
-                     "metrics" : best_candtraj_metrics,
+                     "metric" : metrics,
+                     # "metrics" : best_candtraj_metrics,
+                     "ttc": self._trajectory_evaluator._ttc,
+                     "weighted_ttc": self._trajectory_evaluator._weighted_ttc,
         }
-        if trajectories is not None:
-            # print(np.stack(trajectories).shape) (num_ensemble, time_steps, (x,y,h))
-            risk_dict["e_traj_var"] = self._cal_val(np.stack(trajectories))
 
         risk_str = f"""Candidate traj var: {np.array2string(risk_dict['traj_var'], precision=6)}
 Candidate traj prob var: {np.array2string(risk_dict['prob_var'], precision=6)}
@@ -332,7 +341,7 @@ Predictions var: {np.array2string(risk_dict['pred_var'], precision=3, suppress_s
                     iteration=current_input.iteration.index,
                     planning_trajectory=self._global_to_local(trajectory, ego_state),
                     candidate_trajectories=self._global_to_local(
-                        candidate_trajectories[np.mean(rule_based_scores, axis=0) > 0], ego_state
+                        candidate_trajectories[rule_based_scores > 0], ego_state
                     ),
                     candidate_index=best_candidate_idx,
                     predictions=predictions,
@@ -365,16 +374,6 @@ Predictions var: {np.array2string(risk_dict['pred_var'], precision=3, suppress_s
         # 将新数据保存到.mat文件中
         mat_data[var_name] = data
         scipy.io.savemat(filename, mat_data)
-
-    def _cal_val(self, data):
-        """
-        give val: \sum_{i=0}^{m}\sum_{j=0}^{n}{(x_{ij}-x_{i mean})^2}
-            data: [m, n]
-        """
-        assert data.shape[-1] > 1 and data.shape[-2] > 1, f"_cal_val: can't handle data shape{data.shape}" 
-        data = data.reshape(-1, data.shape[-2], data.shape[-1])
-        res = np.mean(np.var(data, axis=0))
-        return res
 
     def _trim_candidates(
         self,
@@ -559,3 +558,29 @@ Predictions var: {np.array2string(risk_dict['pred_var'], precision=3, suppress_s
             print("\n video saved to ", self.video_dir / "video.mp4\n")
 
         return report
+
+
+def cal_enrisk(trajectories, predictions, data):
+    print(predictions.shape)
+    print(trajectories.shape)
+    n, Na, Nt, d = predictions.shape
+    enrisk = {}
+    if trajectories is not None:
+        enrisk["trajs_var"] = cal_val(np.stack(trajectories))
+
+    enrisk["preds_var"] = np.mean(np.mean(np.var(np.stack(predictions), axis=0), axis=2), axis=1)
+    enrisk["preds_risk"] = {}
+    for idx, token in data["agent_tokens"][1:]:
+        enrisk["preds_risk"][token] = enrisk["preds_var"][idx]
+    return enrisk
+
+
+def cal_val(self, data):
+    """
+    give val: \sum_{i=0}^{m}\sum_{j=0}^{n}{(x_{ij}-x_{i mean})^2}
+        data: [m, n]
+    """
+    assert data.shape[-1] > 1 and data.shape[-2] > 1, f"_cal_val: can't handle data shape{data.shape}" 
+    data = data.reshape(-1, data.shape[-2], data.shape[-1])
+    res = np.mean(np.var(data, axis=0))
+    return res
