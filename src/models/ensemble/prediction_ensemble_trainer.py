@@ -148,7 +148,8 @@ class PredictionEnsembleTrainer(pl.LightningModule):
         #for _ in range(self.num_ensemble):
         #    self.tokens.append([])
         #    self.count.append(0)
-        pass
+        for scheduler in self.lr_schedulers():
+            scheduler.step()
 
     def _compute_objectives(self, res, data) -> Dict[str, torch.Tensor]:
         bs, _, T, _ = res["prediction"].shape

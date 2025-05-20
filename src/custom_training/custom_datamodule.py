@@ -46,8 +46,8 @@ class BootstrapDataset(torch.utils.data.Dataset):
     
     def __getitem__(self, index):
         replica_idx = index // self.num_ensemble
-        data_idx = index % self.num_ensemble
-        return self.base_dataset[int(self.indices[data_idx][replica_idx])]
+        ensemble_idx = index % self.num_ensemble
+        return self.base_dataset[int(self.indices[ensemble_idx][replica_idx])]
     
     def __len__(self):
         return len(self.base_dataset) * self.num_ensemble

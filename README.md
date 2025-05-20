@@ -176,6 +176,7 @@ Download and place the checkpoint in the `pluto/checkpoints` folder.
 | ---------------- | -------- |
 | Pluto-1M-aux-cil | [OneDrive](https://hkustconnect-my.sharepoint.com/:u:/g/personal/jchengai_connect_ust_hk/EaFpLwwHFYVKsPVLH2nW5nEBNbPS7gqqu_Rv2V1dzODO-Q?e=LAZQcI)    |
 | Total-Ensemble-0.1mini|[Tsinghua]|
+| Total-Ensemble-0.1mini|[Tsinghua]|
 | Prediction-Ensemble-0.1mini|[Tsinghua]|
 
 ## Run Pluto-planner simulation
