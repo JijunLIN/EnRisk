@@ -1,4 +1,6 @@
 from typing import Dict, List, Set
+import matplotlib
+matplotlib.use('Agg')
 
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
@@ -26,6 +28,8 @@ from src.scenario_manager.scenario_manager import ScenarioManager
 from ..utils.vis import *
 
 import textwrap
+import gc
+import objgraph
 
 AGENT_COLOR_MAPPING = {
     TrackedObjectType.VEHICLE: "#001eff",
@@ -102,6 +106,7 @@ class NuplanScenarioRender:
         candidate_index=None,
         return_img=True,
         risk=None,
+        enrisk=None,
     ):
         ego_state = current_input.history.ego_states[-1]
         map_api = initialization.map_api
@@ -139,6 +144,7 @@ class NuplanScenarioRender:
             agent_attn_weights=agent_attn_weights,
             return_img=return_img,
             risk=risk,
+            enrisk=enrisk,
         )
 
     def render_from_scenario(
@@ -199,6 +205,7 @@ class NuplanScenarioRender:
         agent_attn_weights=None,
         return_img=False,
         risk=None,
+        enrisk=None,
     ):
         fig, ax = plt.subplots(figsize=(10, 10))
 
@@ -238,17 +245,21 @@ class NuplanScenarioRender:
 
         self._plot_reference_lines(ax, self.scenario_manager.get_reference_lines())
 
-        self._plot_ego(ax, ego_state)
+        self._plot_ego(ax, ego_state, color=enrisk["trajs_var"] if enrisk is not None and "trajs_var" in enrisk else None)
 
         if gt_state is not None:
-            self._plot_ego(ax, gt_state, gt=True)
+            self._plot_ego(ax, gt_state, gt=True, color=enrisk["trajs_var"] if enrisk is not None and "trajs_var" in enrisk else None)
             gt_trajectory = np.array([state.rear_axle.array for state in gt_trajectory])
             gt_trajectory = np.matmul(gt_trajectory - self.origin, self.rot_mat)
             ax.plot(gt_trajectory[:, 0], gt_trajectory[:, 1], color="blue", alpha=0.5)
 
         if not self.disable_agent:
             for track in tracked_objects.tracked_objects:
-                self._plot_tracked_object(ax, track, agent_attn_weights)
+                if enrisk is not None and "preds_risk" in enrisk:
+                    preds_risk_agent = enrisk["preds_risk"].get(track.track_token)
+                else:
+                    preds_risk_agent = None
+                self._plot_tracked_object(ax, track, agent_attn_weights, preds_risk_agent)
 
         if planning_trajectory is not None:
             self._plot_planning(ax, planning_trajectory)
@@ -365,8 +376,15 @@ class NuplanScenarioRender:
             )
             ax.add_patch(polygon)
 
-    def _plot_ego(self, ax, ego_state: EgoState, gt=False):
+    def _plot_ego(self, ax, ego_state: EgoState, gt=False, color=None):
         kwargs = {"lw": 1.5}
+        if color is not None:
+            # 归一化数值到0~1范围（使用对数变换处理大数值范围）
+            norm_value = color/ 10 if color < 10 else 1.0
+
+            cmap = plt.get_cmap('coolwarm')
+            color = cmap(norm_value)  # 根据归一化值获取颜色
+
         if gt:
             ax.add_patch(
                 self._polygon_to_patch(
@@ -382,7 +400,7 @@ class NuplanScenarioRender:
                 self._polygon_to_patch(
                     ego_state.car_footprint.geometry,
                     ec="#ff7f0e",
-                    fill=False,
+                    fc=color,
                     zorder=10,
                     **kwargs,
                 )
@@ -396,7 +414,16 @@ class NuplanScenarioRender:
             zorder=11,
         )
 
-    def _plot_tracked_object(self, ax, track: TrackedObject, agent_attn_weights=None):
+    def _plot_tracked_object(self, ax, track: TrackedObject, agent_attn_weights=None, fillcolor=None):
+        #print(fillcolor)
+        if fillcolor is not None:
+            # 归一化数值到0~1范围（使用对数变换处理大数值范围）
+            norm_value = fillcolor/ 4.0 if fillcolor < 4 else 1.0
+
+            cmap = plt.get_cmap('coolwarm')
+            fillcolor = cmap(norm_value)  # 根据归一化值获取颜色
+
+
         center, angle = track.center.array, track.center.heading
         center = np.matmul(center - self.origin, self.rot_mat)
         angle = angle - self.angle
@@ -407,7 +434,7 @@ class NuplanScenarioRender:
         color = AGENT_COLOR_MAPPING.get(track.tracked_object_type, "k")
         ax.add_patch(
             self._polygon_to_patch(
-                track.box.geometry, ec=color, fill=False, alpha=1.0, zorder=4, lw=1.5
+                track.box.geometry, ec=color, fc=fillcolor, alpha=1.0, zorder=4, lw=1.5
             )
         )
 

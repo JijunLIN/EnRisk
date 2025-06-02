@@ -95,12 +95,13 @@ class PlutoPlanner(AbstractPlanner):
         self._learning_based_score_weight = learning_based_score_weight
 
         self._timestamp = 0
+        self.mat_data = {}
 
+        self.log_dir = Path(save_dir + "/log")
         if render:
             self._scene_render = NuplanScenarioRender()
             if save_dir is not None:
                 self.video_dir = Path(save_dir+"/video")
-                self.log_dir = Path(save_dir + "/log")
             else:
                 self.video_dir = Path(os.getcwd())
             self.video_dir.mkdir(exist_ok=True, parents=True)
@@ -176,13 +177,14 @@ class PlutoPlanner(AbstractPlanner):
         return planning_trajectory
 
     def _run_planning_once(self, current_input: PlannerInput):
-        # commom var
+        # common metrics
         start = time.perf_counter()
         self._timestamp += 1 #self._step_interval
         risk_str = None
 
-        # simulation var
+        # simulation
         ego_state = current_input.history.ego_states[-1]
+        velocity = ego_state.dynamic_car_state.center_velocity_2d.magnitude()
         planner_feature = self._planner_feature_builder.get_features_from_simulation(
             current_input, self._initialization
         )
@@ -190,8 +192,12 @@ class PlutoPlanner(AbstractPlanner):
             [planner_feature.to_feature_tensor()]
         ).to_device(self.device)
 
+        start_f = time.perf_counter()
         # plan
         out = self._planner.forward(planner_feature_torch.data)  # use forward of model
+
+        end_f = time.perf_counter()
+        forward = end_f - start_f
 
         # output
         candidate_trajectories = (
@@ -202,19 +208,23 @@ class PlutoPlanner(AbstractPlanner):
         trajectories = None
         if "trajectories" in out:
             trajectories = [traj[0].cpu().numpy().astype(np.float64) for traj in out["trajectories"]]
+            trajectories = np.stack(trajectories)
 
-        predictions = []
+        predictions = None
         prediction = None
-        MoE_prob = []
+        MoE_prob = None
         if self._use_prediction:
             if "output_predictions" in out:
+                predictions = []
                 for pre in out["output_predictions"]:
                     predictions.append(pre[0].cpu().numpy())
                 prediction = out["output_prediction"][0].cpu().numpy()
+                predictions = np.stack(predictions)
             elif "output_prediction" in out:
                 prediction = out["output_prediction"][0].cpu().numpy()
-        else:
-            predictions = None
+
+        if "probs" in out:
+            MoE_prob = out['probs'][0].cpu().numpy()
 
         ref_free_trajectory = (
             (out["output_ref_free_trajectory"][0].cpu().numpy().astype(np.float64))
@@ -245,11 +255,10 @@ class PlutoPlanner(AbstractPlanner):
         # a score based on rule (with no prediction)
         #rule_based_scores = []
         metrics = []
-        enrisk = None
-        if predictions is not None:
-            enrisk = cal_enrisk(trajectories, predictions, planner_feature.data)
+        #enrisk = None
+        enrisk = cal_enrisk(trajectories, predictions, planner_feature.data, MoE_prob)
 
-        rule_based_scores, weighted_metrics, multi_metrics = self._trajectory_evaluator.evaluate(
+        rule_based_scores, weighted_metrics, multi_metrics, red_light = self._trajectory_evaluator.evaluate(
                 candidate_trajectories=candidate_trajectories,
                 init_ego_state=current_input.history.ego_states[-1],
                 detections=current_input.history.observations[-1],
@@ -267,10 +276,11 @@ class PlutoPlanner(AbstractPlanner):
         #rule_based_scores.append(final_scores)
         # metrics.append(np.concatenate((weighted_metrics, multi_metrics), axis=0))
         #rule_based_scores = np.stack(rule_based_scores)
-        metrics = np.concatenate(weighted_metrics, multi_metrics)
+        # print(weighted_metrics, multi_metrics)
+        metrics = np.concatenate((weighted_metrics, multi_metrics), axis=0)
         # final score is rulebased + learnbased * weight
         # best_ensemble_index = np.argmin(rule_based_scores, axis=0)
-        #out = rule_based_scores[best_ensemble_index, np.arange(rule_based_scores.shape[1])]
+        # out = rule_based_scores[best_ensemble_index, np.arange(rule_based_scores.shape[1])]
         #print(out)
         #print(np.min(rule_based_scores, axis=0))
         final_scores = (
@@ -282,9 +292,7 @@ class PlutoPlanner(AbstractPlanner):
         best_candidate_idx = final_scores.argmax()
 
         #best_candtraj_metrics = metrics[best_ensemble_index[best_candidate_idx], 
-        #                                    :,
-        #                                    best_candidate_idx] # (7)
-        
+        #                                    :,best_candidate_idx] # (7)
         # brake at the last
         trajectory = self._emergency_brake.brake_if_emergency(
             ego_state,
@@ -305,8 +313,13 @@ class PlutoPlanner(AbstractPlanner):
                     include_ego_state=False,
                 )
             )
+        if red_light:
+            if_emergency = False
+
+    
         end = time.perf_counter()
         elapsed = end - start
+        # print(planner_feature.data.keys()) # dict_keys(['current_state', 'agent', 'agent_tokens', 'static_objects', 'map', 'reference_line', 'origin', 'angle'])
         # print(np.stack(predictions).shape)  (num_ensemble, agents, time_steps, (x,y,h,..))
         risk_dict = {"emergency": if_emergency,
                      "traj_var": cal_val(candidate_trajectories),
@@ -315,22 +328,32 @@ class PlutoPlanner(AbstractPlanner):
                      "final_score": final_scores[best_candidate_idx],
                      #"rule_based_scores": rule_based_scores,
                      "final_scores": final_scores,
-                     "enrisk": enrisk,
                      "step_time": elapsed,
+                     "forward_time": forward,
                      "metric" : metrics,
+                     "velocity": velocity,
                      # "metrics" : best_candtraj_metrics,
                      "ttc": self._trajectory_evaluator._ttc,
                      "weighted_ttc": self._trajectory_evaluator._weighted_ttc,
+                     "scenario_type": self._scenario.scenario_type
         }
+        if enrisk is not None:
+            risk_dict["enrisk"] = enrisk
+        if MoE_prob is not None:
+            risk_dict["probs"] = MoE_prob
 
-        risk_str = f"""Candidate traj var: {np.array2string(risk_dict['traj_var'], precision=6)}
-Candidate traj prob var: {np.array2string(risk_dict['prob_var'], precision=6)}
-Traj var: {risk_dict["e_traj_var"] if "e_traj_var" in risk_dict else "None"}
-Traj Chosed: {risk_dict['traj_chosed']}     Final Score: {np.array2string(risk_dict['final_score'], precision=6)}
-Predictions var: {np.array2string(risk_dict['pred_var'], precision=3, suppress_small=True, max_line_width=np.inf)}
-"""
+        risk_str = None
+        f"""Candidate traj var: {np.array2string(risk_dict['traj_var'], precision=6)}
+        Candidate traj prob var: {np.array2string(risk_dict['prob_var'], precision=6)}
+        Traj var: {risk_dict["enrisk"]["trajs_var"] if "enrisk" in risk_dict and "trajs_var" in risk_dict["enrisk"] else "None"}
+        Traj Chosed: {risk_dict['traj_chosed']}     Final Score: {np.array2string(risk_dict['final_score'], precision=6)}
+        Predictions var: {np.array2string(risk_dict["enrisk"]['preds_var'], precision=3, suppress_small=True, max_line_width=np.inf) if "enrisk" in risk_dict and "preds_var" in risk_dict["enrisk"] else "None"}
+        TTC: {self._trajectory_evaluator._ttc}
+        TTC_w": {self._trajectory_evaluator._weighted_ttc}
+        """
 #Candidate traj rule-based score var: {np.array2string(np.var(risk_dict['rule_based_scores'], axis=0), precision=6, suppress_small=False)}
         self.log_data_to_mat(risk_dict)
+
         if self._render:
             self._imgs.append(
                 self._scene_render.render_from_simulation(
@@ -344,9 +367,10 @@ Predictions var: {np.array2string(risk_dict['pred_var'], precision=3, suppress_s
                         candidate_trajectories[rule_based_scores > 0], ego_state
                     ),
                     candidate_index=best_candidate_idx,
-                    predictions=predictions,
+                    predictions=[prediction],
                     return_img=True,
-                    risk=risk_str
+                    risk=risk_str,
+                    enrisk=enrisk
                 )
             )
 
@@ -363,17 +387,18 @@ Predictions var: {np.array2string(risk_dict['pred_var'], precision=3, suppress_s
         """
         id = str.split(self._planner_ckpt, "/")[-1]
         filename = f"{self.log_dir}/{self._scenario.log_name}_{self._scenario.token}_{id}.mat"
-        if os.path.exists(filename):
-            mat_data = scipy.io.loadmat(filename)
-        else:
-            mat_data = {}
+        #if os.path.exists(filename) and False:
+        #    mat_data = scipy.io.loadmat(filename)
+        #else:
+        #    mat_data = {}
 
         # 生成唯一的变量名
         var_name = f'{self._timestamp}'
 
         # 将新数据保存到.mat文件中
-        mat_data[var_name] = data
-        scipy.io.savemat(filename, mat_data)
+        self.mat_data[var_name] = data
+        if self._timestamp > 145:
+            scipy.io.savemat(filename, self.mat_data)
 
     def _trim_candidates(
         self,
@@ -560,22 +585,46 @@ Predictions var: {np.array2string(risk_dict['pred_var'], precision=3, suppress_s
         return report
 
 
-def cal_enrisk(trajectories, predictions, data):
-    print(predictions.shape)
-    print(trajectories.shape)
-    n, Na, Nt, d = predictions.shape
+def cal_enrisk(trajectories, predictions, data, probs):
+    #n, Na, Nt, 5 = predictions.shape
+    #n, Nt, 3 = trajectories.shape
+    # probs: normalized probabilities
     enrisk = {}
     if trajectories is not None:
-        enrisk["trajs_var"] = cal_val(np.stack(trajectories))
-
-    enrisk["preds_var"] = np.mean(np.mean(np.var(np.stack(predictions), axis=0), axis=2), axis=1)
-    enrisk["preds_risk"] = {}
-    for idx, token in data["agent_tokens"][1:]:
-        enrisk["preds_risk"][token] = enrisk["preds_var"][idx]
+        enrisk["trajs_var"] = cal_val(trajectories)
+    
+    if predictions is not None and  predictions.shape[0] > 1 and predictions.shape[1] > 1:
+        if probs is None:
+            enrisk["preds_var"] = np.mean(np.mean(np.var(predictions, axis=0), axis=2), axis=1)
+        else:
+            # 对每个智能体 Na 独立计算
+            weighted_vars = []
+            for na in range(predictions.shape[1]):
+                # 获取当前智能体的 predictions [n, Nt, 5] 和 probs [n,]
+                preds_na = predictions[:, na, :, :]  # shape [n, Nt, 5]
+                probs_na = probs[na, :]              # shape [n,]
+                
+                # 计算加权方差 [Nt, 5]
+                weighted_var_na = np.average(
+                    (preds_na - np.mean(preds_na, axis=0))**2,
+                    axis=0,
+                    weights=probs_na
+                )
+                
+                # 对时间和特征取平均 [1,]
+                weighted_vars.append(np.mean(weighted_var_na))
+            enrisk["preds_var"] = np.array(weighted_vars)  # shape [Na,]
+        if len(data["agent_tokens"][1:]) > 0:
+            enrisk["preds_risk"] = {}
+            for idx, token in enumerate(data["agent_tokens"][1:]):
+                enrisk["preds_risk"][token] = enrisk["preds_var"][idx]
+    if len(enrisk) == 0:
+        enrisk = None
+    # print(enrisk)
     return enrisk
 
 
-def cal_val(self, data):
+def cal_val(data):
     """
     give val: \sum_{i=0}^{m}\sum_{j=0}^{n}{(x_{ij}-x_{i mean})^2}
         data: [m, n]
@@ -584,3 +633,14 @@ def cal_val(self, data):
     data = data.reshape(-1, data.shape[-2], data.shape[-1])
     res = np.mean(np.var(data, axis=0))
     return res
+
+def find_none(data, path=""):
+    if isinstance(data, dict):
+        for k, v in data.items():
+            new_path = f"{path}.{k}" if path else k
+            find_none(v, new_path)
+    elif isinstance(data, np.ndarray) and data.dtype == object:
+        for i, item in enumerate(data):
+            find_none(item, f"{path}[{i}]")
+    elif data is None:
+        print(f"发现 None 值在路径: {path}")

@@ -1,9 +1,9 @@
 cwd=$(pwd)
 CKPT_ROOT="$cwd/checkpoints"
 
-export NUPLAN_DATA_ROOT="/media/jjlin/database/nuplan/dataset"
-export NUPLAN_MAPS_ROOT="/media/jjlin/database/nuplan/dataset/maps"
-export NUPLAN_EXP_ROOT="/media/jjlin/database/nuplan/exp"
+export NUPLAN_DATA_ROOT="/media/jjlin/database1/nuplan/dataset"
+export NUPLAN_MAPS_ROOT="/media/jjlin/database1/nuplan/dataset/maps"
+export NUPLAN_EXP_ROOT="/media/jjlin/database1/nuplan/exp"
 
 PLANNER=$1
 BUILDER=$2
@@ -11,7 +11,7 @@ FILTER=$3
 CKPT=$4
 VIDEO_SAVE_DIR=$5
 
-# CHALLENGE="closed_loop_nonreactive_agents"
+#CHALLENGE="closed_loop_nonreactive_agents"
 # CHALLENGE="closed_loop_reactive_agents"
 CHALLENGE="open_loop_boxes"
 

@@ -124,7 +124,10 @@ class PredictionEnsembleTrainer(pl.LightningModule):
         data=features["feature"].data
         
         opt_parallel.zero_grad()
-        opt_shared.zero_grad()
+        if model_idx == 0:
+            opt_shared.step()
+            opt_shared.zero_grad()
+        # opt_shared.zero_grad()
             
         res = self.model.shared(data)
         res["prediction"] = self.model.parallel[model_idx](res["x"], res["A"])
@@ -137,7 +140,7 @@ class PredictionEnsembleTrainer(pl.LightningModule):
         if self.training:
             self.manual_backward(losses["loss"])
             opt_parallel.step()
-            opt_shared.step()
+                
 
     def on_train_epoch_end(self) -> None:
         #for i in range(self.num_ensemble):
@@ -453,11 +456,14 @@ class PredictionEnsembleTrainer(pl.LightningModule):
         """
         all_optimizers = []
         all_schedulers = []
+        n = 0
         for model in self.model.parallel:
+            n += 1
             opt, sdl = create_pluto_optimizer(model, self.weight_decay, self.lr, self.warmup_epochs, self.epochs)
             all_optimizers.append(opt)
             all_schedulers.append(sdl)
-        opt, sdl = create_pluto_optimizer(self.model.shared, self.weight_decay, self.lr/3, self.warmup_epochs, self.epochs)
+        opt, sdl = create_pluto_optimizer(self.model.shared, self.weight_decay, self.lr/(n), self.warmup_epochs, self.epochs)
+        opt.zero_grad()
         all_optimizers.append(opt)
         all_schedulers.append(sdl)
         return all_optimizers, all_schedulers

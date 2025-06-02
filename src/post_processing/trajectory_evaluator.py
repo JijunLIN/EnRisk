@@ -34,7 +34,7 @@ from .forward_simulation.forward_simulator import ForwardSimulator
 from .observation.world_from_prediction import WorldFromPrediction
 
 WEIGHTED_METRICS_WEIGHTS = np.zeros(len(WeightedMetricIndex), dtype=np.float64)
-WEIGHTED_METRICS_WEIGHTS[WeightedMetricIndex.PROGRESS] = 5.0
+#WEIGHTED_METRICS_WEIGHTS[WeightedMetricIndex.PROGRESS] = 5.0
 WEIGHTED_METRICS_WEIGHTS[WeightedMetricIndex.TTC] = 5.0
 WEIGHTED_METRICS_WEIGHTS[WeightedMetricIndex.SPEED_LIMIT] = 2.0
 WEIGHTED_METRICS_WEIGHTS[WeightedMetricIndex.COMFORTABLE] = 2.0
@@ -45,7 +45,8 @@ STOPPED_SPEED_THRESHOLD = 5e-03  # [m/s] (ttc)
 PROGRESS_DISTANCE_THRESHOLD = 0.1  # [m] (progress)
 MAX_OVERSPEED_VALUE_THRESHOLD = 2.23  # [m/s] (speed limit)
 
-ENRISKWEIGHT = 1.0
+ENRISKWEIGHT = 0.25
+TAU = 0.5
 
 
 class TrajectoryEvaluator:
@@ -87,6 +88,7 @@ class TrajectoryEvaluator:
         self._enrisk = None
         self._ttc = None
         self._weighted_ttc = None
+        self._redlight = False
 
     def time_to_at_fault_collision(self, rollout_idx: int) -> float:
         return self._at_fault_collision_time[rollout_idx]
@@ -129,7 +131,7 @@ class TrajectoryEvaluator:
 
         self._evaluate_time_to_collision()
         self._evaluate_speed_limit_compliance()
-        self._evaluate_progress()
+        #self._evaluate_progress()
         self._evaluate_is_comfortable()
 
         return self._aggregate_scores()
@@ -171,6 +173,8 @@ class TrajectoryEvaluator:
         self._weighted_metrics = np.zeros(
             (len(WeightedMetricIndex), self._num_candidates), dtype=np.float64
         )
+        self._redlight = False
+
 
     def _update_ego_rollout(
         self, init_ego_state: EgoState, candidate_trajectories: np.ndarray
@@ -259,6 +263,8 @@ class TrajectoryEvaluator:
             for rollout_idx, obj_idx in zip(intersect_indices[0], intersect_indices[1]):
                 token = self._world[i].tokens[obj_idx]
                 if token.startswith(self._world.red_light_prefix):
+                    #print("RED LIGHT!")
+                    self._redlight = False
                     no_collision_scores[rollout_idx] = 0
                     self._at_fault_collision_time[rollout_idx] = min(
                         i * self._dt, self._at_fault_collision_time[rollout_idx]
@@ -307,7 +313,10 @@ class TrajectoryEvaluator:
         self._multi_metrics[MultiMetricIndex.NO_COLLISION] = no_collision_scores
 
     def _evaluate_time_to_collision(self):
-        ttc_score = np.ones(self._num_candidates, dtype=np.float64)
+        ttc_score = np.full(self._num_candidates, np.inf, dtype=np.float64)
+        ttcs = np.full(ttc_score.shape, np.inf, dtype=np.float64)
+        weighted_ttcs = np.full(ttc_score.shape, np.inf, dtype=np.float64)
+
         collided_tokens = {
             i: deepcopy(self._world.collided_tokens)
             for i in range(self._num_candidates)
@@ -350,9 +359,11 @@ class TrajectoryEvaluator:
                     intersect_indices[0], intersect_indices[1]
                 ):
                     token = self._world[i + step].tokens[obj_idx]
-                    if (
-                        token.startswith(self._world.red_light_prefix)
-                        or (token in collided_tokens[rollout_idx])
+                    if token.startswith(self._world.red_light_prefix):
+                        #print("RED LIGHT!")
+                        self._redlight = True
+                        continue
+                    if ((token in collided_tokens[rollout_idx])
                         or (speed[rollout_idx, t] < STOPPED_SPEED_THRESHOLD)
                     ):
                         continue
@@ -388,16 +399,22 @@ class TrajectoryEvaluator:
                         and collision_at_lateral
                     ):
                         ttc = (t+step)*self._dt
-                        weighted_ttc = None
                         if self._enrisk is not None:  # risk is on
-                            weighted_ttc = ttc / (1+ ENRISKWEIGHT * self._enrisk["preds_risk"][token])
-                            ttc_score[rollout_idx] = weighted_ttc
+                            if self._enrisk["preds_risk"].get(token):
+                                weighted_ttc = ttc / (1+ ENRISKWEIGHT * (self._enrisk["preds_risk"][token]-TAU))
+                            else:
+                                weighted_ttc = ttc / (1+ ENRISKWEIGHT * (2-TAU))
+                            ttc_score[rollout_idx] = min(weighted_ttc, ttc_score[rollout_idx])
+                            weighted_ttcs[rollout_idx] = min(weighted_ttc, ttc_score[rollout_idx])
+                            ttcs[rollout_idx] = min(ttc, ttc_score[rollout_idx])
                         else:
-                            ttc_score[rollout_idx] = ttc
+                            ttc_score[rollout_idx] = min(ttc, ttc_score[rollout_idx])
+                            ttcs[rollout_idx] = min(ttc, ttc_score[rollout_idx])
+                            weighted_ttcs[rollout_idx] = min(ttc, ttc_score[rollout_idx])
                         collided_tokens[rollout_idx].append(token)
-        self._weighted_ttc = weighted_ttc
-        self._ttc = ttc
-        self._weighted_metrics[WeightedMetricIndex.TTC] = ttc_score / np.max(ttc_score)
+        self._weighted_ttc = weighted_ttcs
+        self._ttc = ttcs
+        self._weighted_metrics[WeightedMetricIndex.TTC] = np.clip(ttc_score / 4.0, 0.0, 1.0)
 
     def _evaluate_driving_direction_compliance(self):
         displacement = np.linalg.norm(
@@ -480,7 +497,7 @@ class TrajectoryEvaluator:
         ] = 0.5
         multiplicate_metric_scores *= comfort_multi_score
         multiplicate_metric_scores *= speed_limit_score
-
+        """
         progress = self._ego_progress * multiplicate_metric_scores
         max_progress = progress.max()
         if max_progress > PROGRESS_DISTANCE_THRESHOLD:
@@ -493,7 +510,7 @@ class TrajectoryEvaluator:
                 * multiplicate_metric_scores
             )
         self.progress_score = progress_score
-        self._weighted_metrics[WeightedMetricIndex.PROGRESS] = progress_score
+        self._weighted_metrics[WeightedMetricIndex.PROGRESS] = progress_score"""
 
         weighted_metric_scores = (
             self._weighted_metrics * WEIGHTED_METRICS_WEIGHTS[..., None]
@@ -502,4 +519,4 @@ class TrajectoryEvaluator:
         final_scores = multiplicate_metric_scores * weighted_metric_scores
         self._final_score = final_scores
 
-        return final_scores, self._weighted_metrics, self._multi_metrics
+        return final_scores, self._weighted_metrics, self._multi_metrics, self._redlight

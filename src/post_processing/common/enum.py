@@ -138,10 +138,9 @@ class MultiMetricIndex(IntEnum):
 
 
 class WeightedMetricIndex(IntEnum):
-    PROGRESS = 0
-    SPEED_LIMIT = 1
-    COMFORTABLE = 2
-    TTC = 3
+    SPEED_LIMIT = 0
+    COMFORTABLE = 1
+    TTC = 2
 
 
 class CollisionType(IntEnum):

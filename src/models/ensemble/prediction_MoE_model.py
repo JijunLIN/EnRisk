@@ -21,7 +21,7 @@ from src.models.pluto.modules.map_encoder import MapEncoder
 from src.models.pluto.modules.static_objects_encoder import StaticObjectsEncoder
 from src.models.pluto.modules.planning_decoder import PlanningDecoder
 from src.models.pluto.layers.mlp_layer import MLPLayer
-from src.models.ensemble.router import Router
+from src.models.ensemble.router import Router, CapacityAwareRouter
 
 # no meaning, required by nuplan
 trajectory_sampling = TrajectorySampling(num_poses=8, time_horizon=8, interval_length=1)
@@ -260,62 +260,55 @@ class PlanningModelParrallel(TorchModuleWrapper):
         elif isinstance(m, nn.Embedding):
             nn.init.normal_(m.weight, mean=0.0, std=0.02)
     
-    def forward(self, x, A):
-        prediction = self.agent_predictor(x[:, 1:A])
+    def forward(self, x):
+        prediction = self.agent_predictor(x)
         return prediction
 
 class MoELayer(nn.Module):
     """ 稳定版MoE层（含梯度控制） """
-    def __init__(self, dim, future_step, num_ensemble, k=2):
+    def __init__(self, dim, future_step, num_ensemble, feature_builder, k=2):
         super().__init__()
         self.num_ensemble = num_ensemble
         self.k = k
-        self.experts = nn.ModuleList([PlanningModelParrallel(dim, future_step) for _ in range(num_ensemble)])
-        self.router = Router(dim, num_ensemble)
+        self.experts = nn.ModuleList([PlanningModelParrallel(dim, future_step, feature_builder) for _ in range(num_ensemble)])
+        self.router = CapacityAwareRouter(dim, num_ensemble)
         
         # 专家激活统计（用于负载均衡）
         self.register_buffer('expert_counts', torch.zeros(num_ensemble))
         
     def forward(self, x, A):
         # 1. 路由计算
-        router_logits = self.router(x[1:A])  # [batch, seq_len, num_experts]
+        x_input = x[:, 1:A]
+        router_logits = self.router(x_input)  # [bs, A-1, num_experts]
         probs = F.softmax(router_logits, dim=-1)
-        topk_probs, topk_indices = torch.topk(probs, self.k, dim=-1)
+        topk_probs, topk_indices = torch.topk(probs, self.k, dim=-1)  # [bs, A-1, k]
         
         # 2. 更新专家激活统计（用于负载均衡损失）
         if self.training:
             expert_mask = F.one_hot(topk_indices, self.num_ensemble).float()
-            self.expert_counts = 0.9 * self.expert_counts + 0.1 * expert_mask.sum(0).sum(0)
+            self.expert_counts = 0.9 * self.expert_counts + 0.1 * expert_mask.sum(0).sum(0).sum(0)
         
-        # 3. 稀疏激活
-        output = None
-        for expert_idx in range(self.num_ensemble):
-            # 构造当前专家的mask [batch, seq_len]
-            expert_activate = (topk_indices == expert_idx).any(dim=-1)
-            if expert_activate.sum() > 0:
-                expert_input_x = x[expert_activate]
-                expert_input_A = A[expert_activate]
-                expert_output = self.experts[expert_idx](expert_input_x, expert_input_A)
-                if output is None:
-                    output = torch.zeros_like(expert_output)
-                # 加权融合（考虑多专家情况）
-                for k in range(self.k):
-                    k_mask = (topk_indices[expert_activate, k] == expert_idx)
-                    if k_mask.sum() > 0:
-                        output[expert_activate] += (
-                            topk_probs[expert_activate, k][k_mask].unsqueeze(-1) 
-                            * expert_output[k_mask]
-                        )
-        outputs = []
-        if not self.training:
-            ## 需要你补充代码，在推理时需要输出已选定专家的输出和响应概率，储存在outputs中
-            pass
+        # 3. 稀疏激活 提前计算所有专家的输出（显存足够时）
+        all_expert_outputs = torch.stack([expert(x_input) for expert in self.experts], dim=0)  # [num_experts, bs, A-1, 80, 6]
+        all_expert_outputs = all_expert_outputs.permute(1, 2, 0, 3, 4)  # [bs, A-1, num_experts, 80, 6]
+
+        # 4. 选择 topk 专家的输出
+        selected_expert_outputs = torch.gather(
+            all_expert_outputs,
+            dim=2,
+            index=topk_indices.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, -1, 80, 6)
+        )  # [bs, A-1, k, 80, 6]
+
+        # 5. 加权求和
+        weighted_outputs = topk_probs.unsqueeze(-1).unsqueeze(-1) * selected_expert_outputs  # [bs, A-1, k, 80, 6]
+        output = weighted_outputs.sum(dim=2)  # [bs, A-1, 80, 6]
+
         
         # 4. 保存路由信息（用于梯度计算）
         self.last_router_logits = router_logits
         self.last_topk_indices = topk_indices
-        
-        return output, outputs
+
+        return output, probs, all_expert_outputs
     
     def load_balancing_loss(self):
         """ 负载均衡损失 """
@@ -329,8 +322,7 @@ class MoELayer(nn.Module):
         # 添加路由决策的熵正则化
         router_probs = F.softmax(self.last_router_logits, dim=-1)
         router_entropy = -torch.mean(torch.sum(router_probs * torch.log(router_probs + 1e-6), dim=-1))
-        
-        return 0.1 * entropy + 0.01 * router_entropy
+        return -0.1 * entropy + 0.01 * router_entropy, expert_freq
     
     def apply_ghost_gradients(self, optimizer):
         """ 处理未激活专家的梯度（Ghost Gradients技术） """
@@ -384,13 +376,16 @@ class PredictionMoEModel(TorchModuleWrapper):
                                                 state_attn_encoder, state_dropout, 
                                                 use_hidden_proj, cat_x, ref_free_traj,
                                                 feature_builder)  # 共享模型
-        self.parallel = MoELayer(dim, future_steps, num_ensemble, k)  # MoE层
-        # self.train_accuracy = pl.metrics.Accuracy()
+        self.parallel = MoELayer(dim, future_steps, num_ensemble,feature_builder, k)  # MoE层
 
-    def forward(self, data):  # 只有推理时调用
+
+    def forward(self, data): 
         out = self.shared(data)
-        prediction, predictions = self.parallel(out["x"], out["A"])
+        prediction, probs, all_expert_outputs = self.parallel(out["x"], out["A"])
         out["prediction"] = prediction
+        out["probs"] = probs  # [bs, na, 5]
+        # out["all_expert_outputs"] = all_expert_outputs # [bs, na, 5, 80, 6]
+        all_expert_outputs = all_expert_outputs.permute(2, 0, 1, 3, 4)# [5, bs, na, 80, 6]
 
         if not self.training:
             agent_pos = data["agent"]["position"][:, :, self.history_steps - 1]
@@ -407,6 +402,21 @@ class PredictionMoEModel(TorchModuleWrapper):
                 )
             # output_predictions.append(output_prediction)  # (bs, A-1, T, 2)
             out["output_prediction"] = output_prediction
-            out["output_predictions"] = predictions
+            output_predictions = []
+            for i in range(self.num_ensemble):
+                prediction = all_expert_outputs[i]
+                #print(prediction.shape)
+                output_prediction_item = torch.cat(
+                    [
+                        prediction[..., :2] + agent_pos[:, 1:A, None],
+                        torch.atan2(prediction[..., 3], prediction[..., 2]).unsqueeze(-1)
+                        + agent_heading[:, 1:A, None, None],
+                        prediction[..., 4:6],
+                    ],
+                    dim=-1,
+                    )
+                # output_predictions.append(output_prediction)  # (bs, A-1, T, 2)
+                output_predictions.append(output_prediction_item)
+            out["output_predictions"] = output_predictions
         return out
     

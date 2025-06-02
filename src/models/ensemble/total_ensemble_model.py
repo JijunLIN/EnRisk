@@ -61,23 +61,21 @@ class TotalEnsembleModel(TorchModuleWrapper):
                                                 for _ in range(num_ensemble)])
     
     def forward(self, data): # 只允许推理时调用
-        exit()
         out = None
         reses = []
         for model in self.parallel:
             res = model(data)
             reses.append(res)
             if out is not None:
-                for key, value in res:
+                for key, value in res.items():
                     out[key].append(value)
             else:
                 out = {}
-                for key, value in res:
+                for key, value in res.items():
                     out[key] = [value]
 
-        for key, value in out:
+        for key, value in out.items():
             out[key] = torch.mean(torch.stack(value), dim=0)  #平均值方案作为推理主要输出
-            
         if not self.training:
             assert "trajectories" not in out and "output_trajectory" in out
             out["trajectories"] = [o["output_trajectory"] for o in reses]

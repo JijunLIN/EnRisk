@@ -163,9 +163,9 @@ sh ./script/run_pluto_planner.sh prediction_ensemble_planner nuplan_mini mini_de
 ```
 MoE PLUTO
 ```
-sh ./script/train_pluto_model.sh train train_MoE_ensemble_pluto 20 /media/jjlin/database/nuplan/exp/tinymini
+sh ./script/train_pluto_model.sh train train_prediction_MoE_pluto 32 /media/jjlin/database/nuplan/exp/tinymini
 
-sh ./script/run_pluto_planner.sh prediction_MoE_planner nuplan_mini mini_demo_scenario pe_t.ckpt /home/jjlin/pluto_dev/result
+sh ./script/run_pluto_planner.sh prediction_MoE_planner nuplan_mini mini_demo_scenario MoE_t.ckpt /home/jjlin/pluto_dev/result
 ```
 
 ## Checkpoint

@@ -26,7 +26,7 @@ from src.models.pluto.loss.esdf_collision_loss import ESDFCollisionLoss
 logger = logging.getLogger(__name__)
 
 
-class PredictionEnsembleTrainer(pl.LightningModule):
+class PredictionMoETrainer(pl.LightningModule):
     def __init__(
         self,
         model: TorchModuleWrapper,
@@ -75,8 +75,6 @@ class PredictionEnsembleTrainer(pl.LightningModule):
         if use_collision_loss:
             self.collision_loss = ESDFCollisionLoss()
 
-        self.train_accuracy = pl.metrics.Accuracy() # JJ
-
 
     def on_fit_start(self) -> None:
         metrics_collection = MetricCollection(
@@ -107,34 +105,58 @@ class PredictionEnsembleTrainer(pl.LightningModule):
         """
         features, targets, scenarios = batch
 
-        [opt_parallel, opt_shared] = self.optimizers()
-        opt_parallel.zero_grad()
+        [opt_experts, opt_shared, opt_router] = self.optimizers()
+        opt_experts.zero_grad()
         opt_shared.zero_grad()
+        opt_router.zero_grad()
         
         res = self.model(features["feature"].data)
 
         losses = self._compute_objectives(res, features["feature"].data)
         metrics = self._compute_metrics(res, features["feature"].data, prefix)
 
-        moe_loss = self.model.parallel.load_balancing_loss()
-        total_loss = losses["loss"] + moe_loss
-
         self._log_step(losses["loss"], losses, metrics, prefix)
 
         if self.training:
+            moe_loss, expert_freq = self.model.parallel.load_balancing_loss()
+            total_loss = losses["loss"] + moe_loss
             self.manual_backward(total_loss)
-            opt_parallel.step()
+            opt_experts.step()
             opt_shared.step()
+            opt_router.step()
 
-        # 记录指标
-        # self.train_accuracy(res, ) 这里应该怎么写？
-        self.log_dict({
-            'total_loss': total_loss,
-            'moe_loss': moe_loss,
-            #'train_acc': self.train_accuracy,
-            'expert_util': len(self.model.parallel.last_topk_indices.unique()) / self.hparams.num_experts
-        }, prog_bar=True)
+            # 记录指标
+            self.log_dict({
+                'total_loss': total_loss,
+                'moe_loss': moe_loss,
+                'expert_util': len(self.model.parallel.last_topk_indices.unique()) / self.num_ensemble,
+                'expert_freq_std': expert_freq.std(),
+                'router/temp': self.model.parallel.router.temperature.data,
+                'router/capacity_factor': self.model.parallel.router.capacity_factor
+            }, prog_bar=True, on_step=True, on_epoch=True, sync_dist=True)
 
+    def on_train_epoch_end(self) -> None:
+        for scheduler in self.lr_schedulers():
+            scheduler.step()
+        # 在前几个epoch禁用容量限制
+        if self.current_epoch < self.warmup_epochs:
+            self.model.parallel.router.capacity_factor = float('inf')
+        else:
+            self.model.parallel.router.capacity_factor = 1.2
+        # 温度退火 (S型曲线)
+
+        # 更平滑的温度退火
+        current_ratio = self.current_epoch / self.trainer.max_epochs
+        if current_ratio < 0.3:  # 前30%保持高温探索
+            new_temp = 1.0
+        elif current_ratio < 0.7:  # 30%-70%线性退火
+            progress = (current_ratio - 0.3) / 0.4
+            new_temp = 1.0 * (1 - progress) + 0.3 * progress
+        else:  # 后30%保持低温
+            new_temp = 0.3
+            
+        self.model.parallel.router.temperature.data.clamp_(max=new_temp)
+        
 
     def _compute_objectives(self, res, data) -> Dict[str, torch.Tensor]:
         bs, _, T, _ = res["prediction"].shape
@@ -438,10 +460,13 @@ class PredictionEnsembleTrainer(pl.LightningModule):
         """
         all_optimizers = []
         all_schedulers = []
-        opt, sdl = create_pluto_optimizer(self.model.parallel, self.weight_decay, self.lr, self.warmup_epochs, self.epochs)
+        opt, sdl = create_pluto_optimizer(self.model.parallel.experts, self.weight_decay, self.lr*0.8, self.warmup_epochs, self.epochs)
         all_optimizers.append(opt)
         all_schedulers.append(sdl)
-        opt, sdl = create_pluto_optimizer(self.model.shared, self.weight_decay, self.lr/3, self.warmup_epochs, self.epochs)
+        opt, sdl = create_pluto_optimizer(self.model.shared, self.weight_decay, self.lr, self.warmup_epochs, self.epochs)
+        all_optimizers.append(opt)
+        all_schedulers.append(sdl)
+        opt, sdl = create_pluto_optimizer(self.model.parallel.router, self.weight_decay, self.lr*2, self.warmup_epochs, self.epochs)
         all_optimizers.append(opt)
         all_schedulers.append(sdl)
         return all_optimizers, all_schedulers
@@ -451,19 +476,14 @@ class PredictionEnsembleTrainer(pl.LightningModule):
     #         if param.grad is None:
     #             print("unused param", name)
     def on_after_backward(self):
-        """ 后向传播后的梯度处理 """
-        # 1. 应用Ghost Gradients
-        self.model.parallel.apply_ghost_gradients(self.optimizers())
-        
-        # 2. 共享层梯度归一化（关键稳定技术）
-        shared_grad_norm = torch.norm(
-            torch.cat([p.grad.view(-1) for p in self.model.shared.parameters()]))
-        
-        if shared_grad_norm > 1.0:  # 梯度裁剪
-            for p in self.shared_encoder.parameters():
-                p.grad = p.grad / shared_grad_norm
-        
-        # 3. 路由网络梯度增强（Straight-Through效果）
-        for p in self.moe_layer.router.parameters():
-            if p.grad is not None:
-                p.grad = p.grad * 1.5  # 适当放大
+        """后向传播后的梯度处理"""
+        # 梯度裁剪和归一化
+        if not hasattr(self, '_grads_processed'):
+            torch.nn.utils.clip_grad_norm_(self.model.shared.parameters(), max_norm=1.0)
+            if hasattr(self.model, 'parallel'):
+                self.model.parallel.apply_ghost_gradients(self.optimizers()[0])
+                # 增强路由网络梯度
+                for p in self.model.parallel.router.parameters():
+                    if p.grad is not None:
+                        p.grad = p.grad * 1.5
+            self._grads_processed = True

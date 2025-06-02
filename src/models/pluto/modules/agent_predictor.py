@@ -18,12 +18,19 @@ class AgentPredictor(nn.Module):
         """
         x: (bs, N, dim)
         """
+        if len(x.shape) == 3:
+            bs, N, _ = x.shape
 
-        bs, N, _ = x.shape
+            loc = self.loc_predictor(x).view(bs, N, self.future_steps, 2)
+            yaw = self.yaw_predictor(x).view(bs, N, self.future_steps, 2)
+            vel = self.vel_predictor(x).view(bs, N, self.future_steps, 2)
+        else:
+            exit()
+            l, _ = x.shape
 
-        loc = self.loc_predictor(x).view(bs, N, self.future_steps, 2)
-        yaw = self.yaw_predictor(x).view(bs, N, self.future_steps, 2)
-        vel = self.vel_predictor(x).view(bs, N, self.future_steps, 2)
+            loc = self.loc_predictor(x).view(l, self.future_steps, 2)
+            yaw = self.yaw_predictor(x).view(l, self.future_steps, 2)
+            vel = self.vel_predictor(x).view(l, self.future_steps, 2)
 
         prediction = torch.cat([loc, yaw, vel], dim=-1)
         return prediction

@@ -162,6 +162,5 @@ wandb/
 outputs/
 *.ckpt
 checkpoints/
-result/
-result2/
+result*/
 thesis/
